@@ -1,0 +1,4 @@
+[submodule "services/auth-service"]
+	path = services/auth-service
+	url = https://github.com/ringobingo-dev/warehouse-auth-service.git
+	branch = main
