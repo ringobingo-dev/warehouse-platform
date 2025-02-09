@@ -863,15 +863,30 @@ async def list_inventory_by_room(
     controller = InventoryController(warehouse_service)
     return await controller.list_by_room(room_id)
 
-@inventory_router.get("/search")
+@inventory_router.get(
+    "/search",
+    response_model=List[InventoryResponse],
+    summary="Search inventory by SKU",
+    tags=["inventory"]
+)
 async def search_inventory(
-    sku: str,
+    sku: str = Query(..., description="SKU to search for"),
     warehouse_service: WarehouseService = Depends(get_warehouse_service)
-) -> List[Dict]:
+) -> List[InventoryResponse]:
     """Search inventory by SKU."""
     try:
         controller = InventoryController(warehouse_service)
         return await controller.search(sku)
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e)
+        )
+    except ItemNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except Exception as e:
         logger.error(f"Error searching inventory: {str(e)}")
         raise HTTPException(

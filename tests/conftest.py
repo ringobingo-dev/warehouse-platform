@@ -300,6 +300,7 @@ def mock_warehouse_db(test_warehouse, test_room, test_inventory):
             self.list_inventory_by_room = AsyncMock(side_effect=self.handle_list_inventory_by_room)
             self.create_inventory = AsyncMock(side_effect=self.handle_create_inventory)
             self.search_inventory = AsyncMock(side_effect=self.handle_search_inventory)
+            self.search_by_sku = AsyncMock(side_effect=self.handle_search_by_sku)
 
         async def handle_get_customer(self, customer_id: UUID) -> Dict[str, Any]:
             """Handle get customer requests."""
@@ -602,6 +603,14 @@ def mock_warehouse_db(test_warehouse, test_room, test_inventory):
                     results.append(inventory)
             return results
 
+        async def handle_search_by_sku(self, sku: str) -> List[Dict[str, Any]]:
+            """Handle search by SKU requests."""
+            results = []
+            for inventory in self.inventory.values():
+                if inventory["sku"].lower() == sku.lower():
+                    results.append(inventory)
+            return results
+
         async def handle_get_room_by_id(self, room_id: str) -> Dict[str, Any]:
             """Handle get room by ID requests."""
             if str(room_id) not in self.rooms:
@@ -857,6 +866,8 @@ def mock_inventory_db(test_inventory):
                 inventory['name'] = inventory['description']
             if 'unit' not in inventory:
                 inventory['unit'] = 'kg'
+            if 'total_weight' not in inventory and 'quantity' in inventory and 'unit_weight' in inventory:
+                inventory['total_weight'] = Decimal(str(inventory['quantity'])) * Decimal(str(inventory['unit_weight']))
             return InventoryResponse(**inventory)
 
         def __init__(self):
@@ -879,6 +890,8 @@ def mock_inventory_db(test_inventory):
             self.list_by_room = AsyncMock(name='list_by_room')
             self.list_by_warehouse = AsyncMock(name='list_by_warehouse')
             self.list_by_customer = AsyncMock(name='list_by_customer')
+            self.search_by_sku = AsyncMock(name='search_by_sku')
+            self.get_inventory_levels = AsyncMock(name='get_inventory_levels')
             
             # Map base methods to inventory-specific methods
             self.create_item.side_effect = self.create_inventory
@@ -907,6 +920,14 @@ def mock_inventory_db(test_inventory):
     mock_db.list_by_customer.return_value = [mock_db.create_inventory_response(test_inventory)]
     mock_db.search_inventory.return_value = [mock_db.create_inventory_response(test_inventory)]
     mock_db.list_items.return_value = [mock_db.create_inventory_response(test_inventory)]
+    mock_db.search_by_sku.return_value = [mock_db.create_inventory_response(test_inventory)]
+    
+    # Set up default behavior for get_inventory_levels
+    mock_db.get_inventory_levels.return_value = {
+        'total_capacity': '1000.00',
+        'available_capacity': '900.00',
+        'utilized_capacity': '100.00'
+    }
     
     # Set up history with a sample entry
     mock_db.get_inventory_history.return_value = [{

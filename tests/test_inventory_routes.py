@@ -5,6 +5,8 @@ from fastapi import status
 from .conftest import CustomTestClient
 from datetime import datetime, timezone
 from app.database import ValidationError
+from unittest.mock import AsyncMock
+from app.models import RoomStatus
 
 @pytest.fixture
 def test_inventory():
@@ -82,26 +84,44 @@ async def test_get_inventory_success(client: CustomTestClient, mock_inventory_db
     assert data["sku"] == test_inventory["sku"]
 
 @pytest.mark.asyncio
-async def test_list_inventory_by_room(client: CustomTestClient, mock_warehouse_db, test_inventory):
-    """Test listing inventory by room."""
-    mock_warehouse_db.get_room_by_id.return_value = {
-        "id": test_inventory["room_id"],
+async def test_list_inventory_by_room(client: CustomTestClient, mock_warehouse_db):
+    room_data = {
+        "id": "98765432-5678-4321-8765-432109876543",
         "name": "Test Room",
-        "capacity": "100.00",
-        "temperature": "20.00",
-        "humidity": "50.00",
+        "warehouse_id": "87654321-4321-8765-4321-876543210987",
         "dimensions": {
             "length": "10.00",
             "width": "8.00",
             "height": "4.00"
         },
-        "warehouse_id": test_inventory["warehouse_id"],
-        "status": "active",
+        "capacity": "100.00",
+        "temperature": "20.50",
+        "humidity": "50",
+        "status": RoomStatus.ACTIVE,
+        "current_utilization": "0.00",
         "available_capacity": "100.00",
         "created_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc)
     }
-    mock_warehouse_db.list_inventory_by_room.return_value = [test_inventory]
+    
+    test_inventory = {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "name": "Test Item",
+        "description": "Test Description",
+        "sku": "TEST-SKU-001",
+        "quantity": 10,
+        "unit": "kg",
+        "unit_weight": Decimal("2.5"),
+        "total_weight": Decimal("25.0"),
+        "room_id": "550e8400-e29b-41d4-a716-446655440001",
+        "warehouse_id": "550e8400-e29b-41d4-a716-446655440002",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc)
+    }
+    
+    # Create new AsyncMock instances for the methods
+    mock_warehouse_db.get_room_by_id = AsyncMock(return_value=room_data)
+    mock_warehouse_db.list_inventory_by_room = AsyncMock(return_value=[test_inventory])
     
     response = await client.get(f"/api/v1/inventory/room/{test_inventory['room_id']}")
     
@@ -252,12 +272,12 @@ async def test_delete_inventory_success(
     assert not response.content
 
 @pytest.mark.asyncio
-async def test_create_inventory_success(client: CustomTestClient, mock_warehouse_db, test_room):
-    """Test successful inventory creation"""
+async def test_create_inventory_success(client: CustomTestClient, mock_warehouse_db, mock_inventory_db, test_room):
+    """Test creating inventory successfully."""
     inventory_data = {
-        "sku": "TEST-SKU-001",
-        "name": "Test Item",
         "description": "Test item description",
+        "name": "Test Item",
+        "sku": "TEST-SKU-001",
         "quantity": "10",
         "unit": "kg",
         "unit_weight": "2.5",
@@ -265,13 +285,22 @@ async def test_create_inventory_success(client: CustomTestClient, mock_warehouse
         "warehouse_id": test_room["warehouse_id"]
     }
     
-    mock_warehouse_db.get_room.return_value = test_room
-    mock_warehouse_db.create_inventory.return_value = {
-        "id": str(uuid4()),
-        **inventory_data,
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc)
-    }
+    # Create new AsyncMock instances for the methods
+    mock_warehouse_db.get_room = AsyncMock(return_value=test_room)
+    mock_inventory_db.create_inventory = AsyncMock(return_value={
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "name": inventory_data["name"],
+        "description": inventory_data["description"],
+        "quantity": inventory_data["quantity"],
+        "unit": inventory_data["unit"],
+        "unit_weight": inventory_data["unit_weight"],
+        "room_id": inventory_data["room_id"],
+        "warehouse_id": inventory_data["warehouse_id"],
+        "sku": inventory_data["sku"],
+        "created_at": "2025-02-09T18:48:08.469453+00:00",
+        "updated_at": "2025-02-09T18:48:08.469455+00:00",
+        "transfer_history": []
+    })
     
     response = await client.post("/api/v1/inventory", json=inventory_data)
     
@@ -286,10 +315,11 @@ async def test_create_inventory_success(client: CustomTestClient, mock_warehouse
     assert data["warehouse_id"] == str(inventory_data["warehouse_id"])
 
 @pytest.mark.asyncio
-async def test_search_inventory(client: CustomTestClient, mock_warehouse_db, test_inventory):
+async def test_search_inventory(client: CustomTestClient, mock_warehouse_db, mock_inventory_db, test_inventory):
     """Test searching inventory by SKU"""
-    mock_warehouse_db.search_inventory.return_value = [test_inventory]
-    mock_warehouse_db.get_warehouse.return_value = {
+    # Create new AsyncMock instances for the methods
+    mock_inventory_db.search_by_sku = AsyncMock(return_value=[test_inventory])
+    mock_warehouse_db.get_warehouse = AsyncMock(return_value={
         "id": test_inventory["warehouse_id"],
         "name": "Test Warehouse",
         "address": "123 Test St",
@@ -298,15 +328,13 @@ async def test_search_inventory(client: CustomTestClient, mock_warehouse_db, tes
         "available_capacity": "900.00",
         "created_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc)
-    }
+    })
     
-    response = await client.get("/api/v1/inventory/search", params={"sku": test_inventory["sku"]})
+    response = await client.get(f"/api/v1/inventory/search?sku={test_inventory['sku']}")
     
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
-    assert isinstance(data, list)
-    assert len(data) > 0
-    item = data[0]
-    assert item["sku"] == test_inventory["sku"]
-    assert item["name"] == test_inventory["name"]
+    assert len(data) == 1
+    assert data[0]["id"] == test_inventory["id"]
+    assert data[0]["sku"] == test_inventory["sku"]
 

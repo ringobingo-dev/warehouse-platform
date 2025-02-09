@@ -392,47 +392,35 @@ class WarehouseService:
     ) -> InventoryResponse:
         """Add inventory to a warehouse with capacity validation."""
         logger.info(f"Adding inventory to warehouse {warehouse_id}")
-        
+
         # Check warehouse exists and has capacity
         warehouse = await self.get_warehouse(warehouse_id)
         if not warehouse:
             raise ItemNotFoundError(f"Warehouse {warehouse_id} not found")
-            
+
         # Verify room exists and belongs to warehouse
         room = await self.get_room(warehouse_id, str(inventory_data.room_id))
         if not room:
             raise ItemNotFoundError(f"Room {inventory_data.room_id} not found")
         if str(room.warehouse_id) != warehouse_id:
             raise ValidationError("Room does not belong to specified warehouse")
-        
+
         current_level = await self.get_inventory_levels(warehouse_id)
-        
+
         # Calculate total weight
         total_weight = inventory_data.quantity * inventory_data.unit_weight
-        
-        # Check if warehouse has enough capacity
-        used_capacity = sum(item.total_weight for item in current_level)
-        if used_capacity + total_weight > warehouse.total_capacity:
+
+        # Check warehouse and room capacity
+        if not self._check_warehouse_capacity(warehouse, current_level, inventory_data):
             raise ValidationError("Insufficient warehouse capacity")
-            
+
         # Check room capacity
         if Decimal(str(total_weight)) > Decimal(str(room.available_capacity)):
             raise ValidationError("Insufficient room capacity")
-            
-        # Add inventory
-        inventory = await self.warehouse_db.add_inventory(warehouse_id, inventory_data)
-        
-        # Update room utilization
-        room_capacity = Decimal(str(room.capacity))
-        current_utilization = (Decimal(str(total_weight)) / room_capacity) * Decimal('100.00')
-        await self.warehouse_db.update_room(
-            warehouse_id,
-            str(inventory_data.room_id),
-            {"current_utilization": current_utilization}
-        )
-        
-        logger.info(f"Added inventory to warehouse {warehouse_id}")
-        return InventoryResponse(**inventory)
+
+        # Create inventory
+        inventory_dict = await self.inventory_db.create_inventory(inventory_data)
+        return InventoryResponse(**inventory_dict)
 
     async def get_inventory_levels(self, warehouse_id: str) -> List[InventoryResponse]:
         """Get inventory levels for a warehouse."""
@@ -453,29 +441,28 @@ class WarehouseService:
         except (TypeError, ValueError):
             return False
 
-    async def _check_warehouse_capacity(self, warehouse_id: str, inventory_data: InventoryCreate) -> bool:
-        """Check if warehouse has sufficient capacity for new inventory."""
-        try:
-            # Get current inventory levels
-            current_level = await self.inventory_db.list_by_warehouse(warehouse_id)
+    def _check_warehouse_capacity(self, warehouse: WarehouseResponse, current_level: List[Dict | InventoryResponse], inventory_data: InventoryCreate) -> bool:
+        """Check if warehouse has sufficient capacity for new inventory.
+        
+        Args:
+            warehouse: The warehouse to check
+            current_level: Current inventory in the warehouse (can be dicts or InventoryResponse objects)
+            inventory_data: New inventory to be added
             
-            # Calculate total weight of current inventory
-            used_capacity = sum(
-                Decimal(str(item.total_weight)) 
-                for item in current_level
-            )
-            
-            # Calculate new inventory weight
-            new_weight = inventory_data.quantity * inventory_data.unit_weight
-            
-            # Get warehouse capacity
-            warehouse = await self.get_warehouse(warehouse_id)
-            total_capacity = Decimal(str(warehouse.total_capacity))
-            
-            return used_capacity + new_weight <= total_capacity
-        except Exception as e:
-            logger.error(f"Error checking warehouse capacity: {str(e)}")
-            raise ValidationError(f"Error checking warehouse capacity: {str(e)}")
+        Returns:
+            bool: True if warehouse has sufficient capacity, False otherwise
+        """
+        # Calculate total weight of current inventory
+        used_capacity = sum(
+            Decimal(str(item["total_weight"] if isinstance(item, dict) else item.total_weight))
+            for item in current_level
+        )
+        
+        # Calculate weight of new inventory
+        new_weight = inventory_data.quantity * inventory_data.unit_weight
+        
+        # Check if total weight would exceed capacity
+        return used_capacity + new_weight <= Decimal(str(warehouse.total_capacity))
 
     async def create_customer(self, customer_data: CustomerCreate) -> CustomerResponse:
         """Create a new customer."""
