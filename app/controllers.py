@@ -7,7 +7,8 @@ from pydantic import BaseModel
 from app.models import (
     CustomerCreate, CustomerResponse,
     WarehouseCreate, WarehouseResponse,
-    RoomCreate, RoomResponse
+    RoomCreate, RoomResponse,
+    InventoryResponse
 )
 from app.services import WarehouseService
 from app.utils import (
@@ -16,6 +17,7 @@ from app.utils import (
     format_warehouse_response,
     format_room_response
 )
+from app.database import ValidationError, ItemNotFoundError
 
 logger = logging.getLogger(__name__)
 
@@ -30,9 +32,19 @@ class BaseController:
         logger.error(f"Error during {operation}: {str(error)}")
         if isinstance(error, HTTPException):
             raise error
-        if "not found" in str(error).lower():
+        if isinstance(error, ValidationError):
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+                detail=str(error)
+            )
+        if isinstance(error, ItemNotFoundError) or "not found" in str(error).lower():
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(error)
+            )
+        if "invalid" in str(error).lower():
+            raise HTTPException(
+                status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
                 detail=str(error)
             )
         raise HTTPException(
@@ -51,12 +63,16 @@ class BaseController:
     def format_response(self, data: Dict, response_model: Type[BaseModel]) -> Dict:
         """Format response data according to the response model."""
         try:
-            return response_model(**data).dict()
+            if isinstance(data, BaseModel):
+                return data.dict()
+            if isinstance(data, dict):
+                return response_model(**data).dict()
+            raise ValueError(f"Unexpected data type: {type(data)}")
         except Exception as e:
             logger.error(f"Error formatting response: {str(e)}")
             raise HTTPException(
                 status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail="Error formatting response"
+                detail=f"Error formatting response: {str(e)}"
             )
 
 class CustomerController(BaseController):
@@ -184,4 +200,21 @@ class RoomController(BaseController):
             return {"message": "Room deleted successfully"}
         except Exception as e:
             await self.handle_error(e, "room deletion")
+
+class InventoryController(BaseController):
+    async def list_by_room(self, room_id: str) -> List[Dict]:
+        """List all inventory items in a room."""
+        try:
+            results = await self.service.list_inventory_by_room(room_id)
+            return [self.format_response(r, InventoryResponse) for r in results]
+        except Exception as e:
+            await self.handle_error(e, "inventory listing")
+
+    async def search(self, sku: str) -> List[Dict]:
+        """Search inventory by SKU."""
+        try:
+            results = await self.service.search_inventory(sku)
+            return [self.format_response(r, InventoryResponse) for r in results]
+        except Exception as e:
+            await self.handle_error(e, "inventory search")
 

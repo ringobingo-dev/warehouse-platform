@@ -278,60 +278,50 @@ class WarehouseService:
         logger.info(f"Updated room {room_id} status to {status}")
         return RoomResponse(**updated_room)
 
-    async def update_room_dimensions(
-        self,
-        warehouse_id: str,
-        room_id: str,
-        length: float,
-        width: float,
-        height: float
-    ) -> RoomResponse:
-        """
-        Update room dimensions with validation.
-        
-        Args:
-            warehouse_id: UUID of the warehouse containing the room
-            room_id: UUID of the room to update
-            length: New length in meters
-            width: New width in meters
-            height: New height in meters
-            
-        Returns:
-            RoomResponse: Updated room details
-            
-        Raises:
-            ValueError: If room has inventory or dimensions invalid
-        """
+    async def update_room_dimensions(self, warehouse_id: str, room_id: str, length: Decimal, width: Decimal, height: Decimal) -> RoomResponse:
+        """Update room dimensions."""
         logger.info(f"Updating dimensions of room {room_id}")
-        
-        room = await self.get_room(warehouse_id, room_id)
-        if room.current_utilization > 0:
-            raise ValueError("Cannot modify dimensions of room with inventory")
-        
-        # Create update data
-        update_data = {
-            "length": length,
-            "width": width,
-            "height": height
-        }
-        
-        # Validate new dimensions
-        if not self._validate_room_dimensions(
-            await self.get_warehouse(warehouse_id),
-            {**room.model_dump(), **update_data}
-        ):
-            raise ValueError("Invalid room dimensions")
-        
-        # Update room
-        updated_room = await self.warehouse_db.update_room(
-            warehouse_id, room_id, update_data
-        )
-        
-        # Update warehouse capacity
-        await self._update_warehouse_capacity(warehouse_id)
-        
-        logger.info(f"Updated room {room_id} dimensions")
-        return RoomResponse(**updated_room)
+        try:
+            # Get the room
+            room = await self.get_room(warehouse_id, room_id)
+            if not room:
+                raise ItemNotFoundError(f"Room {room_id} not found")
+
+            # Check if room has inventory
+            inventory = await self.inventory_db.list_by_room(room_id)
+            if inventory:
+                raise ValueError("Cannot modify dimensions of room with inventory")
+
+            # Validate dimensions
+            if not all(dim > 0 for dim in [length, width, height]):
+                raise ValidationError("All dimensions must be positive")
+
+            # Get all rooms to validate total warehouse capacity
+            rooms = await self.list_rooms(warehouse_id)
+            total_volume = sum(
+                self._calculate_room_volume(r) for r in rooms 
+                if r.id != UUID(room_id)  # Exclude current room
+            )
+
+            # Calculate new room volume
+            new_volume = length * width * height
+            if total_volume + new_volume > self.MAX_WAREHOUSE_VOLUME:
+                raise ValidationError("New dimensions would exceed maximum warehouse volume")
+
+            # Update room dimensions
+            update_data = {
+                "dimensions": {
+                    "length": str(length),
+                    "width": str(width),
+                    "height": str(height)
+                }
+            }
+            updated_room = await self.warehouse_db.update_room(warehouse_id, room_id, update_data)
+            logger.info(f"Updated room {room_id} dimensions")
+            return RoomResponse(**updated_room)
+        except Exception as e:
+            logger.error(f"Error updating room dimensions: {str(e)}")
+            raise
 
     def _validate_status_transition(self, current: RoomStatus, new: RoomStatus) -> bool:
         """Validate if a status transition is allowed."""
@@ -393,6 +383,16 @@ class WarehouseService:
         
         # Check warehouse exists and has capacity
         warehouse = await self.get_warehouse(warehouse_id)
+        if not warehouse:
+            raise ItemNotFoundError(f"Warehouse {warehouse_id} not found")
+            
+        # Verify room exists and belongs to warehouse
+        room = await self.get_room(warehouse_id, str(inventory_data.room_id))
+        if not room:
+            raise ItemNotFoundError(f"Room {inventory_data.room_id} not found")
+        if str(room.warehouse_id) != warehouse_id:
+            raise ValidationError("Room does not belong to specified warehouse")
+        
         current_level = await self.get_inventory_levels(warehouse_id)
         
         # Calculate total weight
@@ -401,12 +401,11 @@ class WarehouseService:
         # Check if warehouse has enough capacity
         used_capacity = sum(item.total_weight for item in current_level)
         if used_capacity + total_weight > warehouse.total_capacity:
-            raise ValueError("Insufficient warehouse capacity")
+            raise ValidationError("Insufficient warehouse capacity")
             
-        # Get room and validate capacity
-        room = await self.get_room(warehouse_id, str(inventory_data.room_id))
+        # Check room capacity
         if Decimal(str(total_weight)) > Decimal(str(room.available_capacity)):
-            raise ValueError("Insufficient room capacity")
+            raise ValidationError("Insufficient room capacity")
             
         # Add inventory
         inventory = await self.warehouse_db.add_inventory(warehouse_id, inventory_data)
@@ -436,23 +435,44 @@ class WarehouseService:
 
     def _validate_warehouse_capacity(self, warehouse_data: Dict[str, Any]) -> bool:
         """Validate warehouse capacity configuration."""
-        return warehouse_data.get("total_capacity", 0) > 0
+        try:
+            capacity = Decimal(str(warehouse_data.get("total_capacity", 0)))
+            return capacity > 0
+        except (TypeError, ValueError):
+            return False
 
+    async def check_warehouse_capacity(self, warehouse_id: str, inventory_data: Dict[str, Any]) -> bool:
+        """Check if warehouse has sufficient capacity for new inventory."""
+        try:
+            # Get current inventory levels
+            current_level = await self.inventory_db.list_by_warehouse(warehouse_id)
+            
+            # Calculate total weight of current inventory
+            used_capacity = sum(
+                Decimal(str(item.get('total_weight', 0))) 
     def _check_warehouse_capacity(
         self, warehouse: WarehouseResponse,
         current_level: List[InventoryResponse],
         inventory_data: InventoryCreate
     ) -> bool:
         """Check if warehouse has capacity for new inventory."""
-        total_capacity = sum(
-            room.max_weight_capacity
-            for room in warehouse.rooms
-            if room.status == RoomStatus.ACTIVE
-        )
-        current_total = sum(level.quantity for level in current_level)
-        new_total = inventory_data.quantity
-        
-        return current_total + new_total <= total_capacity
+        try:
+            # Calculate current usage
+            current_total = sum(
+                Decimal(str(level.quantity)) * Decimal(str(level.unit_weight))
+                for level in current_level
+            )
+            
+            # Calculate new inventory weight
+            new_total = Decimal(str(inventory_data.quantity)) * Decimal(str(inventory_data.unit_weight))
+            
+            # Get total warehouse capacity
+            total_capacity = Decimal(str(warehouse.total_capacity))
+            
+            return current_total + new_total <= total_capacity
+        except (TypeError, ValueError, AttributeError) as e:
+            logger.error(f"Error checking warehouse capacity: {str(e)}")
+            return False
 
     async def create_customer(self, customer_data: CustomerCreate) -> CustomerResponse:
         """Create a new customer."""
@@ -504,26 +524,38 @@ class WarehouseService:
             raise ItemNotFoundError(f"Warehouse with ID {warehouse_id} not found")
 
         rooms = await self.warehouse_db.list_rooms(warehouse_id)
+        if not rooms:
+            return {
+                "total_capacity": Decimal('0'),
+                "total_used": Decimal('0'),
+                "utilization_percentage": Decimal('0')
+            }
+
         total_capacity = Decimal('0')
         total_used = Decimal('0')
 
         for room in rooms:
-            room_capacity = await self.calculate_room_capacity(room)
-            total_capacity += room_capacity
-            
-            inventory_items = await self.warehouse_db.list_inventory_by_room(room["id"])
-            room_used = sum(Decimal(str(item["total_weight"])) for item in inventory_items)
-            total_used += room_used
+            if room.get('status') == RoomStatus.ACTIVE:
+                room_capacity = await self.calculate_room_capacity(room)
+                total_capacity += room_capacity
+                
+                inventory_items = await self.warehouse_db.list_inventory_by_room(room["id"])
+                room_used = sum(
+                    Decimal(str(item.get("total_weight", 0)))
+                    for item in inventory_items
+                )
+                total_used += room_used
 
-        if total_capacity == Decimal('0'):
-            utilization_percentage = Decimal('0')
-        else:
-            utilization_percentage = (total_used / total_capacity) * Decimal('100')
+        utilization_percentage = (
+            (total_used / total_capacity) * Decimal('100')
+            if total_capacity > 0
+            else Decimal('0')
+        )
 
         return {
             "total_capacity": total_capacity,
             "total_used": total_used,
-            "utilization_percentage": utilization_percentage
+            "utilization_percentage": utilization_percentage.quantize(Decimal('0.01'))
         }
 
     async def check_room_availability(
@@ -570,4 +602,32 @@ class WarehouseService:
             height = Decimal(str(dimensions['height']))
             return length * width * height
         raise ValueError("Invalid room data format")
+
+    async def list_inventory_by_room(self, room_id: str) -> List[InventoryResponse]:
+        """List all inventory items in a room."""
+        try:
+            # Verify room exists
+            room = await self.warehouse_db.get_room_by_id(room_id)
+            if not room:
+                raise ItemNotFoundError(f"Room {room_id} not found")
+            
+            # Get inventory
+            inventory = await self.inventory_db.list_by_room(room_id)
+            return [InventoryResponse(**item) for item in inventory]
+        except Exception as e:
+            logger.error(f"Error listing inventory for room {room_id}: {str(e)}")
+            raise
+
+    async def search_inventory(self, sku: str) -> List[InventoryResponse]:
+        """Search inventory by SKU."""
+        try:
+            if not sku:
+                raise ValidationError("SKU is required for search")
+            inventory = await self.inventory_db.search_by_sku(sku)
+            return [InventoryResponse(**item) for item in inventory]
+        except Exception as e:
+            logger.error(f"Error searching inventory with SKU {sku}: {str(e)}")
+            if isinstance(e, ValidationError):
+                raise
+            raise ValidationError(f"Error searching inventory: {str(e)}")
 

@@ -385,16 +385,23 @@ async def test_warehouse_controller_create_success(warehouse_service, valid_ware
     warehouse_service.create_warehouse.assert_called_once_with(valid_warehouse_data)
 
 @pytest.mark.asyncio
-async def test_warehouse_controller_update_success(valid_warehouse_data):
-    """Test successful warehouse update through controller."""
+async def test_warehouse_controller_update_success():
+    valid_warehouse_data = WarehouseCreate(
+        name="Test Warehouse",
+        address="123 Warehouse St",
+        total_capacity=Decimal("1000.00"),
+        customer_id=uuid4(),
+        rooms=[]
+    )
+    
     warehouse_service = WarehouseService(
         warehouse_db=AsyncMock(),
         inventory_db=AsyncMock(),
         customer_db=AsyncMock()
     )
-    controller = WarehouseController(warehouse_service)
     
-    # Set up mock response
+    # Mock the update_warehouse method
+    warehouse_service.update_warehouse = AsyncMock()
     warehouse_service.update_warehouse.return_value = WarehouseResponse(
         id=uuid4(),
         name="Updated Warehouse",
@@ -407,8 +414,11 @@ async def test_warehouse_controller_update_success(valid_warehouse_data):
         rooms=[]
     )
     
+    controller = WarehouseController(warehouse_service)
     result = await controller.update_warehouse(uuid4(), {"name": "Updated Warehouse"})
+    
     assert result["name"] == "Updated Warehouse"
+    assert warehouse_service.update_warehouse.called
 
 # Room Controller Tests
 @pytest.mark.asyncio
@@ -576,11 +586,13 @@ async def test_room_controller_update_room_validation_error():
     # Create mocks
     mock_warehouse_db = AsyncMock()
     mock_inventory_db = AsyncMock()
+    mock_customer_db = AsyncMock()
     
     # Create service with correct parameters
     warehouse_service = WarehouseService(
         warehouse_db=mock_warehouse_db,
-        inventory_db=mock_inventory_db
+        inventory_db=mock_inventory_db,
+        customer_db=mock_customer_db
     )
     
     controller = RoomController(service=warehouse_service)
@@ -592,7 +604,7 @@ async def test_room_controller_update_room_validation_error():
     
     # Set up mock to raise validation error
     warehouse_service.update_room = AsyncMock(
-        side_effect=ValidationError("Invalid temperature value")
+        side_effect=ValueError("Invalid temperature value")
     )
     
     # Execute test

@@ -27,6 +27,7 @@ from app.database import (
     OperationError
 )
 from app.services import WarehouseService
+from app.controllers import InventoryController
 
 # Initialize routers
 customer_router = APIRouter()
@@ -857,21 +858,30 @@ async def get_inventory_history(
         )
 
 @inventory_router.get(
+    "/room/{room_id}",
+    response_model=List[InventoryResponse],
+    summary="List inventory by room",
+    tags=["inventory"]
+)
+async def list_inventory_by_room(
+    room_id: str,
+    warehouse_service: WarehouseService = Depends(get_warehouse_service)
+):
+    """List all inventory items in a room."""
+    controller = InventoryController(warehouse_service)
+    return await controller.list_by_room(room_id)
+
+@inventory_router.get(
     "/search",
     response_model=List[InventoryResponse],
     summary="Search inventory",
     tags=["inventory"]
 )
 async def search_inventory(
-    db: InventoryDB = Depends(get_inventory_db),
-    sku: str = None,
-    warehouse_id: UUID = None
+    sku: str,
+    warehouse_service: WarehouseService = Depends(get_warehouse_service)
 ):
-    try:
-        return await db.search_inventory(sku=sku, warehouse_id=warehouse_id)
-    except DatabaseError as e:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(e)
-        )
+    """Search inventory by SKU."""
+    controller = InventoryController(warehouse_service)
+    return await controller.search(sku)
 

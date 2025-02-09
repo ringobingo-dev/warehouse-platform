@@ -465,25 +465,16 @@ def mock_warehouse_db(test_warehouse, test_room, test_inventory):
             }
             return room_dict
 
-        async def handle_update_room(self, room_id: UUID, update_data: Dict[str, Any]) -> Dict[str, Any]:
-            if str(room_id) not in self.rooms:
+        async def handle_update_room(self, warehouse_id: str, room_id: str, update_data: dict) -> dict:
+            """Handle room update operation."""
+            room = await self.get_room(warehouse_id, room_id)
+            if not room:
                 raise ItemNotFoundError(f"Room {room_id} not found")
             
-            room = self.rooms[str(room_id)]
-            
-            # Update allowed fields
-            allowed_fields = ["name", "capacity", "temperature", "humidity", "dimensions", "status"]
-            for field in allowed_fields:
-                if field in update_data:
-                    room[field] = update_data[field]
-            
-            # Update timestamps
-            room["updated_at"] = datetime.now(timezone.utc)
-            
-            # Store updated room
-            self.rooms[str(room_id)] = room
-            
-            return room
+            # Update room data
+            updated_room = {**room, **update_data}
+            self.rooms[room_id] = updated_room
+            return updated_room
 
         async def handle_delete_room(self, room_id: UUID) -> None:
             """Handle delete room requests."""
@@ -610,6 +601,16 @@ def mock_warehouse_db(test_warehouse, test_room, test_inventory):
                     (inventory["description"] and query.lower() in inventory["description"].lower())):
                     results.append(inventory)
             return results
+
+        async def handle_get_room_by_id(self, room_id: str) -> Dict[str, Any]:
+            """Handle get room by ID requests."""
+            if str(room_id) not in self.rooms:
+                raise ItemNotFoundError(f"Room {room_id} not found")
+            return self.rooms[str(room_id)]
+
+        async def get_room_by_id(self, room_id: str) -> Dict[str, Any]:
+            """Get room by ID."""
+            return await self.handle_get_room_by_id(room_id)
 
     return MockWarehouseDB()
 
