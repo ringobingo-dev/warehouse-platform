@@ -84,7 +84,7 @@ async def test_get_inventory_success(client: CustomTestClient, mock_inventory_db
 @pytest.mark.asyncio
 async def test_list_inventory_by_room(client: CustomTestClient, mock_warehouse_db, test_inventory):
     """Test listing inventory by room."""
-    mock_warehouse_db.get_room.return_value = {
+    mock_warehouse_db.get_room_by_id.return_value = {
         "id": test_inventory["room_id"],
         "name": "Test Room",
         "capacity": "100.00",

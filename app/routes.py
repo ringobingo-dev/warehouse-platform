@@ -1,4 +1,4 @@
-from typing import List
+from typing import List, Dict
 from uuid import UUID
 from fastapi import APIRouter, HTTPException, Depends, status, Query, Request
 from fastapi.responses import JSONResponse
@@ -460,7 +460,7 @@ async def check_warehouse_availability(
 )
 async def list_rooms_by_warehouse(
     warehouse_id: str,
-    db: RoomDB = Depends(get_room_db)
+    warehouse_service: WarehouseService = Depends(get_warehouse_service)
 ):
     try:
         # Validate UUID format
@@ -472,24 +472,16 @@ async def list_rooms_by_warehouse(
                 detail="Invalid warehouse ID format"
             )
             
-        try:
-            return await db.list_rooms(str(warehouse_id_uuid))
-        except ItemNotFoundError as e:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=str(e)
-            )
-        except DatabaseError as e:
-            raise HTTPException(
-                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-                detail=str(e)
-            )
-    except HTTPException:
-        raise
-    except Exception as e:
+        return await warehouse_service.list_rooms(str(warehouse_id_uuid))
+    except ItemNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
+    except DatabaseError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=f"Error listing rooms: {str(e)}"
+            detail=str(e)
         )
 
 # Room routes
@@ -871,17 +863,19 @@ async def list_inventory_by_room(
     controller = InventoryController(warehouse_service)
     return await controller.list_by_room(room_id)
 
-@inventory_router.get(
-    "/search",
-    response_model=List[InventoryResponse],
-    summary="Search inventory",
-    tags=["inventory"]
-)
+@inventory_router.get("/search")
 async def search_inventory(
     sku: str,
     warehouse_service: WarehouseService = Depends(get_warehouse_service)
-):
+) -> List[Dict]:
     """Search inventory by SKU."""
-    controller = InventoryController(warehouse_service)
-    return await controller.search(sku)
+    try:
+        controller = InventoryController(warehouse_service)
+        return await controller.search(sku)
+    except Exception as e:
+        logger.error(f"Error searching inventory: {str(e)}")
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
+        )
 

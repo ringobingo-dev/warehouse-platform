@@ -243,10 +243,22 @@ class WarehouseService:
             
         Returns:
             List[RoomResponse]: List of room details
+            
+        Raises:
+            ItemNotFoundError: If warehouse not found
         """
         logger.info(f"Listing rooms for warehouse {warehouse_id}")
-        rooms = await self.warehouse_db.get_rooms(warehouse_id)
-        return [RoomResponse(**room) for room in rooms]
+        try:
+            # Verify warehouse exists
+            warehouse = await self.get_warehouse(warehouse_id)
+            if not warehouse:
+                raise ItemNotFoundError(f"Warehouse {warehouse_id} not found")
+            
+            rooms = await self.warehouse_db.get_rooms(warehouse_id)
+            return [RoomResponse(**room) for room in rooms]
+        except Exception as e:
+            logger.error(f"Error listing rooms for warehouse {warehouse_id}: {str(e)}")
+            raise
 
     async def update_room_status(
         self, warehouse_id: str, room_id: str, status: RoomStatus
@@ -441,7 +453,7 @@ class WarehouseService:
         except (TypeError, ValueError):
             return False
 
-    async def check_warehouse_capacity(self, warehouse_id: str, inventory_data: Dict[str, Any]) -> bool:
+    async def _check_warehouse_capacity(self, warehouse_id: str, inventory_data: InventoryCreate) -> bool:
         """Check if warehouse has sufficient capacity for new inventory."""
         try:
             # Get current inventory levels
@@ -449,30 +461,21 @@ class WarehouseService:
             
             # Calculate total weight of current inventory
             used_capacity = sum(
-                Decimal(str(item.get('total_weight', 0))) 
-    def _check_warehouse_capacity(
-        self, warehouse: WarehouseResponse,
-        current_level: List[InventoryResponse],
-        inventory_data: InventoryCreate
-    ) -> bool:
-        """Check if warehouse has capacity for new inventory."""
-        try:
-            # Calculate current usage
-            current_total = sum(
-                Decimal(str(level.quantity)) * Decimal(str(level.unit_weight))
-                for level in current_level
+                Decimal(str(item.total_weight)) 
+                for item in current_level
             )
             
             # Calculate new inventory weight
-            new_total = Decimal(str(inventory_data.quantity)) * Decimal(str(inventory_data.unit_weight))
+            new_weight = inventory_data.quantity * inventory_data.unit_weight
             
-            # Get total warehouse capacity
+            # Get warehouse capacity
+            warehouse = await self.get_warehouse(warehouse_id)
             total_capacity = Decimal(str(warehouse.total_capacity))
             
-            return current_total + new_total <= total_capacity
-        except (TypeError, ValueError, AttributeError) as e:
+            return used_capacity + new_weight <= total_capacity
+        except Exception as e:
             logger.error(f"Error checking warehouse capacity: {str(e)}")
-            return False
+            raise ValidationError(f"Error checking warehouse capacity: {str(e)}")
 
     async def create_customer(self, customer_data: CustomerCreate) -> CustomerResponse:
         """Create a new customer."""
@@ -606,14 +609,14 @@ class WarehouseService:
     async def list_inventory_by_room(self, room_id: str) -> List[InventoryResponse]:
         """List all inventory items in a room."""
         try:
-            # Verify room exists
+            # First validate the room exists
             room = await self.warehouse_db.get_room_by_id(room_id)
             if not room:
-                raise ItemNotFoundError(f"Room {room_id} not found")
+                raise ItemNotFoundError(f"Room with id {room_id} not found")
             
-            # Get inventory
-            inventory = await self.inventory_db.list_by_room(room_id)
-            return [InventoryResponse(**item) for item in inventory]
+            # Get inventory for the room
+            inventory_items = await self.inventory_db.list_by_room(room_id)
+            return inventory_items
         except Exception as e:
             logger.error(f"Error listing inventory for room {room_id}: {str(e)}")
             raise
@@ -621,13 +624,15 @@ class WarehouseService:
     async def search_inventory(self, sku: str) -> List[InventoryResponse]:
         """Search inventory by SKU."""
         try:
-            if not sku:
-                raise ValidationError("SKU is required for search")
-            inventory = await self.inventory_db.search_by_sku(sku)
-            return [InventoryResponse(**item) for item in inventory]
+            if not sku or not isinstance(sku, str):
+                raise ValidationError("A valid SKU string is required for search")
+            
+            inventory_items = await self.inventory_db.search_by_sku(sku)
+            return [InventoryResponse(**item) for item in inventory_items]
+        except ValidationError as e:
+            logger.error(f"Validation error searching inventory with SKU {sku}: {str(e)}")
+            raise
         except Exception as e:
             logger.error(f"Error searching inventory with SKU {sku}: {str(e)}")
-            if isinstance(e, ValidationError):
-                raise
             raise ValidationError(f"Error searching inventory: {str(e)}")
 
