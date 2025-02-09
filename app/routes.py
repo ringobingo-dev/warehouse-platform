@@ -11,6 +11,7 @@ from app.models import (
     WarehouseUpdate,
     RoomCreate,
     RoomResponse,
+    RoomUpdate,
     InventoryCreate,
     InventoryResponse
 )
@@ -22,8 +23,10 @@ from app.database import (
     ItemNotFoundError,
     ValidationError,
     DatabaseError,
-    ConflictError
+    ConflictError,
+    OperationError
 )
+from app.services import WarehouseService
 
 # Initialize routers
 customer_router = APIRouter()
@@ -54,6 +57,14 @@ async def get_inventory_db(request: Request) -> InventoryDB:
     if not hasattr(request.app.state, 'inventory_db'):
         request.app.state.inventory_db = InventoryDB()
     return request.app.state.inventory_db
+
+async def get_warehouse_service(
+    warehouse_db: WarehouseDB = Depends(get_warehouse_db),
+    inventory_db: InventoryDB = Depends(get_inventory_db),
+    customer_db: CustomerDB = Depends(get_customer_db)
+) -> WarehouseService:
+    """Get warehouse service instance."""
+    return WarehouseService(warehouse_db=warehouse_db, inventory_db=inventory_db, customer_db=customer_db)
 
 # Customer routes
 @customer_router.post(
@@ -252,19 +263,21 @@ async def get_customer_by_email(
     tags=["warehouses"]
 )
 async def create_warehouse(
-    warehouse: WarehouseCreate,
-    db: WarehouseDB = Depends(get_warehouse_db)
+    warehouse_data: WarehouseCreate,
+    warehouse_service: WarehouseService = Depends(get_warehouse_service)
 ):
+    """Create a new warehouse."""
     try:
-        return await db.create_warehouse(warehouse)
-    except ValidationError as e:
+        warehouse = await warehouse_service.create_warehouse(warehouse_data)
+        return warehouse
+    except ItemNotFoundError as e:
         raise HTTPException(
-            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            status_code=status.HTTP_404_NOT_FOUND,
             detail=str(e)
         )
-    except ConflictError as e:
+    except ValidationError as e:
         raise HTTPException(
-            status_code=status.HTTP_409_CONFLICT,
+            status_code=status.HTTP_400_BAD_REQUEST,
             detail=str(e)
         )
     except DatabaseError as e:
@@ -370,13 +383,14 @@ async def update_warehouse(
 @warehouse_router.delete(
     "/{warehouse_id}",
     status_code=status.HTTP_204_NO_CONTENT,
-    summary="Delete warehouse",
+    summary="Delete a warehouse",
     tags=["warehouses"]
 )
 async def delete_warehouse(
     warehouse_id: str,
-    db: WarehouseDB = Depends(get_warehouse_db)
+    warehouse_service: WarehouseService = Depends(get_warehouse_service)
 ):
+    """Delete a warehouse."""
     try:
         # Validate UUID format
         try:
@@ -387,11 +401,21 @@ async def delete_warehouse(
                 detail="Invalid warehouse ID format"
             )
             
-        await db.delete_warehouse(str(warehouse_id_uuid))
+        await warehouse_service.delete_warehouse(str(warehouse_id_uuid))
     except ItemNotFoundError:
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Warehouse {warehouse_id} not found"
+        )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e)
+        )
+    except OperationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_409_CONFLICT,
+            detail=str(e)
         )
     except DatabaseError as e:
         raise HTTPException(
@@ -548,7 +572,7 @@ async def get_room(
 )
 async def update_room(
     room_id: str,
-    update_data: dict,
+    update_data: RoomUpdate,
     db: RoomDB = Depends(get_room_db)
 ):
     try:
@@ -839,9 +863,9 @@ async def get_inventory_history(
     tags=["inventory"]
 )
 async def search_inventory(
+    db: InventoryDB = Depends(get_inventory_db),
     sku: str = None,
-    warehouse_id: UUID = None,
-    db: InventoryDB = Depends(get_inventory_db)
+    warehouse_id: UUID = None
 ):
     try:
         return await db.search_inventory(sku=sku, warehouse_id=warehouse_id)

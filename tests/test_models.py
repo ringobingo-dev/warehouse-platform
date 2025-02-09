@@ -215,6 +215,7 @@ def test_inventory_base_valid():
         description="Test Inventory Item Description",
         quantity=Decimal("100.00"),
         unit="kg",
+        unit_weight=Decimal("1.00"),
         room_id=uuid4(),
         warehouse_id=uuid4()
     )
@@ -223,15 +224,19 @@ def test_inventory_base_valid():
     assert inventory.description == "Test Inventory Item Description"
     assert inventory.quantity == Decimal("100.00")
     assert inventory.unit == "kg"
+    assert inventory.unit_weight == Decimal("1.00")
 
 def test_inventory_base_invalid_total_weight():
     """Test inventory base model with invalid total weight."""
     with pytest.raises(ValidationError):
         InventoryBase(
-            product_name="Test Product",
+            sku="TEST-SKU-001",
+            name="Test Product",
             quantity=Decimal("10.00"),
-            unit_weight=Decimal("1.00"),
-            total_weight=Decimal("15.00")  # Incorrect total weight
+            unit="kg",
+            unit_weight=Decimal("-1.00"),  # Invalid negative weight
+            room_id=uuid4(),
+            warehouse_id=uuid4()
         )
 
 def test_inventory_create():
@@ -242,6 +247,7 @@ def test_inventory_create():
         description="Test Inventory Item Description",
         quantity=Decimal("100.00"),
         unit="kg",
+        unit_weight=Decimal("1.00"),
         room_id=uuid4(),
         warehouse_id=uuid4()
     )
@@ -250,6 +256,7 @@ def test_inventory_create():
     assert inventory.description == "Test Inventory Item Description"
     assert inventory.quantity == Decimal("100.00")
     assert inventory.unit == "kg"
+    assert inventory.unit_weight == Decimal("1.00")
 
 def test_inventory_response():
     """Test inventory response model."""
@@ -260,6 +267,7 @@ def test_inventory_response():
         description="Test Inventory Item Description",
         quantity=Decimal("100.00"),
         unit="kg",
+        unit_weight=Decimal("1.00"),
         room_id=uuid4(),
         warehouse_id=uuid4(),
         created_at=datetime.now(timezone.utc),
@@ -270,4 +278,5 @@ def test_inventory_response():
     assert inventory.description == "Test Inventory Item Description"
     assert inventory.quantity == Decimal("100.00")
     assert inventory.unit == "kg"
+    assert inventory.unit_weight == Decimal("1.00")
 

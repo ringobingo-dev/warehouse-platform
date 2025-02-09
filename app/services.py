@@ -2,7 +2,7 @@ import logging
 from typing import Dict, List, Optional, Any
 from uuid import UUID
 from datetime import datetime, timezone
-from app.database import WarehouseDB, CustomerDB, ItemNotFoundError
+from app.database import WarehouseDB, CustomerDB, ItemNotFoundError, InventoryDB, OperationError, ValidationError
 from app.models import (
     WarehouseCreate,
     WarehouseResponse,
@@ -23,38 +23,45 @@ from decimal import Decimal
 logger = logging.getLogger(__name__)
 
 class WarehouseService:
-    def __init__(self, warehouse_db: WarehouseDB, customer_db: CustomerDB):
+    def __init__(self, warehouse_db: WarehouseDB, inventory_db: InventoryDB, customer_db: CustomerDB):
         self.warehouse_db = warehouse_db
+        self.inventory_db = inventory_db
         self.customer_db = customer_db
 
     async def create_warehouse(self, warehouse_data: WarehouseCreate) -> WarehouseResponse:
         """Create a new warehouse."""
         logger.info(f"Creating warehouse for customer {warehouse_data.customer_id}")
         
-        # Verify customer exists
-        customer = await self.get_customer(str(warehouse_data.customer_id))
-        if not customer:
-            raise ValueError(f"Customer {warehouse_data.customer_id} not found")
-        
-        # Create warehouse
-        warehouse_dict = await self.warehouse_db.create_warehouse(warehouse_data.model_dump())
-        if isinstance(warehouse_dict, WarehouseResponse):
-            warehouse_dict = warehouse_dict.model_dump()
-        warehouse = WarehouseResponse(**warehouse_dict)
-        logger.info(f"Created warehouse {warehouse.id}")
-        
-        return warehouse
-
-    async def get_warehouse(self, warehouse_id_str: str) -> WarehouseResponse:
-        """Get warehouse by ID."""
-        logger.info(f"Retrieving warehouse {warehouse_id_str}")
         try:
-            warehouse = await self.warehouse_db.get_warehouse(warehouse_id_str)
+            # Check if customer exists
+            await self.warehouse_db.get_customer(warehouse_data.customer_id)
+            
+            # Create warehouse
+            warehouse_dict = await self.warehouse_db.create_warehouse(warehouse_data)
+            warehouse = WarehouseResponse(**warehouse_dict)
+            logger.info(f"Created warehouse {warehouse.id}")
             return warehouse
-        except ItemNotFoundError:
+        except ItemNotFoundError as e:
             raise HTTPException(
                 status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Warehouse {warehouse_id_str} not found"
+                detail=str(e)
+            )
+
+    async def get_warehouse(self, warehouse_id: str | UUID) -> WarehouseResponse:
+        """Get warehouse by ID."""
+        logger.info(f"Retrieving warehouse {warehouse_id}")
+        try:
+            warehouse_dict = await self.warehouse_db.get_warehouse(UUID(str(warehouse_id)))
+            if not warehouse_dict:
+                raise HTTPException(
+                    status_code=status.HTTP_404_NOT_FOUND,
+                    detail=f"Warehouse {warehouse_id} not found"
+                )
+            return WarehouseResponse(**warehouse_dict)
+        except ItemNotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e)
             )
 
     async def update_warehouse(
@@ -62,7 +69,11 @@ class WarehouseService:
     ) -> WarehouseResponse:
         """Update warehouse details."""
         logger.info(f"Updating warehouse {warehouse_id}")
-        warehouse = await self.get_warehouse(str(warehouse_id))
+        
+        # Check if warehouse exists
+        warehouse = await self.get_warehouse(warehouse_id)
+        if not warehouse:
+            raise ItemNotFoundError(f"Warehouse {warehouse_id} not found")
         
         # Validate update data
         if "total_capacity" in update_data:
@@ -73,15 +84,34 @@ class WarehouseService:
                 )
         
         # Update warehouse
-        updated_warehouse = await self.warehouse_db.update_warehouse(str(warehouse_id), update_data)
+        updated_warehouse_dict = await self.warehouse_db.update_warehouse(UUID(str(warehouse_id)), update_data)
         logger.info(f"Updated warehouse {warehouse_id}")
-        return updated_warehouse
+        return WarehouseResponse(**updated_warehouse_dict)
 
-    async def delete_warehouse(self, warehouse_id: str | UUID) -> None:
-        """Delete warehouse."""
-        logger.info(f"Deleting warehouse {warehouse_id}")
-        await self.warehouse_db.delete_warehouse(str(warehouse_id))
-        logger.info(f"Deleted warehouse {warehouse_id}")
+    async def delete_warehouse(self, warehouse_id_str: str) -> None:
+        """Delete a warehouse."""
+        try:
+            # Check if warehouse exists
+            warehouse = await self.get_warehouse(warehouse_id_str)
+            
+            # Check for inventory
+            inventory = await self.warehouse_db.get_inventory(warehouse_id_str)
+            if inventory:
+                raise ValidationError("Cannot delete warehouse with existing inventory")
+
+            logger.info(f"Deleting warehouse {warehouse_id_str}")
+            await self.warehouse_db.delete_warehouse(warehouse_id_str)
+            logger.info(f"Deleted warehouse {warehouse_id_str}")
+        except ItemNotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e)
+            )
+        except ValidationError as e:
+            raise HTTPException(
+                status_code=status.HTTP_409_CONFLICT,
+                detail=str(e)
+            )
 
     async def create_room(self, warehouse_id: str, room_data: RoomCreate) -> RoomResponse:
         """Create a new room in a warehouse."""
@@ -199,10 +229,10 @@ class WarehouseService:
             ValueError: If room not found
         """
         logger.info(f"Getting room {room_id} from warehouse {warehouse_id}")
-        room = await self.warehouse_db.get_room(warehouse_id, room_id)
-        if not room:
+        room_dict = await self.warehouse_db.get_room(warehouse_id, room_id)
+        if not room_dict:
             raise ValueError(f"Room {room_id} not found")
-        return RoomResponse(**room)
+        return RoomResponse(**room_dict)
 
     async def list_rooms(self, warehouse_id: str) -> List[RoomResponse]:
         """
@@ -372,38 +402,37 @@ class WarehouseService:
         used_capacity = sum(item.total_weight for item in current_level)
         if used_capacity + total_weight > warehouse.total_capacity:
             raise ValueError("Insufficient warehouse capacity")
-        
+            
+        # Get room and validate capacity
+        room = await self.get_room(warehouse_id, str(inventory_data.room_id))
+        if Decimal(str(total_weight)) > Decimal(str(room.available_capacity)):
+            raise ValueError("Insufficient room capacity")
+            
         # Add inventory
-        inventory = await self.warehouse_db.add_inventory(
-            warehouse_id, inventory_data.model_dump()
-        )
-        logger.info(f"Added inventory to warehouse {warehouse_id}")
+        inventory = await self.warehouse_db.add_inventory(warehouse_id, inventory_data)
         
+        # Update room utilization
+        room_capacity = Decimal(str(room.capacity))
+        current_utilization = (Decimal(str(total_weight)) / room_capacity) * Decimal('100.00')
+        await self.warehouse_db.update_room(
+            warehouse_id,
+            str(inventory_data.room_id),
+            {"current_utilization": current_utilization}
+        )
+        
+        logger.info(f"Added inventory to warehouse {warehouse_id}")
         return InventoryResponse(**inventory)
 
-    async def get_inventory_levels(
-        self, warehouse_id: str
-    ) -> List[InventoryResponse]:
-        """
-        Get current inventory levels for a warehouse.
-        
-        Args:
-            warehouse_id: Target warehouse
-            
-        Returns:
-            List[InventoryResponse]: Current inventory levels
-            
-        Raises:
-            ValueError: If warehouse not found
-        """
+    async def get_inventory_levels(self, warehouse_id: str) -> List[InventoryResponse]:
+        """Get inventory levels for a warehouse."""
         logger.info(f"Getting inventory levels for warehouse {warehouse_id}")
-        
-        # Verify warehouse exists
-        warehouse = await self.get_warehouse(warehouse_id)
-        
-        # Get inventory levels
-        inventory = await self.warehouse_db.get_inventory(warehouse_id)
-        return [InventoryResponse(**item) for item in inventory]
+        try:
+            return await self.inventory_db.list_by_warehouse(warehouse_id)
+        except ItemNotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e)
+            )
 
     def _validate_warehouse_capacity(self, warehouse_data: Dict[str, Any]) -> bool:
         """Validate warehouse capacity configuration."""

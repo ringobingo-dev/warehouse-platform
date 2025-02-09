@@ -1,8 +1,8 @@
 from datetime import datetime
-from typing import List, Optional
+from typing import List, Optional, Union
 from uuid import UUID
 from pydantic import BaseModel, EmailStr, Field, field_validator, ValidationInfo
-from decimal import Decimal
+from decimal import Decimal, DecimalException
 import json
 from enum import Enum
 from .validation import (
@@ -96,6 +96,7 @@ class RoomResponse(RoomBase):
     id: UUID
     status: RoomStatus
     available_capacity: Decimal = Field(..., ge=0)
+    current_utilization: Decimal = Field(default=Decimal('0.00'), ge=Decimal('0.00'))
     created_at: datetime
     updated_at: datetime
 
@@ -110,6 +111,15 @@ class RoomResponse(RoomBase):
             return validate_decimal(v, "available_capacity", min_value=Decimal('0'))
         except ValidationError as e:
             raise ValueError(str(e))
+
+    @field_validator('current_utilization')
+    def validate_current_utilization(cls, v: Union[Decimal, str], info: ValidationInfo) -> Decimal:
+        if isinstance(v, str):
+            try:
+                v = Decimal(v)
+            except (ValueError, DecimalException):
+                raise ValueError("Invalid decimal value for current_utilization")
+        return validate_decimal(v, "current_utilization", min_value=Decimal('0.00'), allow_zero=True)
 
 class RoomUpdate(BaseDBModel):
     name: Optional[str] = Field(None, min_length=1, max_length=100)
@@ -297,6 +307,7 @@ class InventoryBase(BaseDBModel):
     description: Optional[str] = Field(None, max_length=500)
     quantity: Decimal = Field(..., ge=0)
     unit: str = Field(..., min_length=1, max_length=20)
+    unit_weight: Decimal = Field(..., ge=0)  # Weight per unit in kg
     room_id: UUID
     warehouse_id: UUID
 

@@ -33,12 +33,20 @@ def mock_warehouse_db():
     return MagicMock()
 
 @pytest.fixture
+def mock_inventory_db():
+    return MagicMock()
+
+@pytest.fixture
 def mock_customer_db():
     return MagicMock()
 
 @pytest.fixture
-def warehouse_service(mock_warehouse_db, mock_customer_db):
-    return WarehouseService(warehouse_db=mock_warehouse_db, customer_db=mock_customer_db)
+def warehouse_service(mock_warehouse_db, mock_inventory_db, mock_customer_db):
+    return WarehouseService(
+        warehouse_db=mock_warehouse_db,
+        inventory_db=mock_inventory_db,
+        customer_db=mock_customer_db
+    )
 
 @pytest.fixture
 def valid_customer_data():
@@ -92,7 +100,18 @@ async def test_base_controller_validate_request(warehouse_service):
 
 @pytest.mark.asyncio
 async def test_base_controller_handle_error():
-    warehouse_service = WarehouseService(warehouse_db=AsyncMock(), customer_db=AsyncMock())
+    # Create mocks
+    mock_warehouse_db = AsyncMock()
+    mock_inventory_db = AsyncMock()
+    mock_customer_db = AsyncMock()
+    
+    # Create service with correct parameters
+    warehouse_service = WarehouseService(
+        warehouse_db=mock_warehouse_db,
+        inventory_db=mock_inventory_db,
+        customer_db=mock_customer_db
+    )
+    
     controller = BaseController(service=warehouse_service)
     error_msg = "Test error"
     
@@ -335,6 +354,62 @@ async def test_warehouse_controller_delete_warehouse(warehouse_service):
     assert result["message"] == "Warehouse deleted successfully"
     controller.service.delete_warehouse.assert_called_once_with(warehouse_id)
 
+@pytest.mark.asyncio
+async def test_warehouse_controller_create_success(warehouse_service, valid_warehouse_data):
+    controller = WarehouseController(service=warehouse_service)
+    
+    # Create expected response
+    warehouse_response = WarehouseResponse(
+        id=UUID('de1d6bfb-9b29-4ded-b458-1d89a9ca6384'),
+        name=valid_warehouse_data.name,
+        address=valid_warehouse_data.address,
+        total_capacity=valid_warehouse_data.total_capacity,
+        customer_id=valid_warehouse_data.customer_id,
+        rooms=[],
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        available_capacity=valid_warehouse_data.total_capacity
+    )
+    
+    # Set up mock
+    warehouse_service.create_warehouse = AsyncMock()
+    warehouse_service.create_warehouse.return_value = warehouse_response
+    
+    # Execute test
+    result = await controller.create_warehouse(valid_warehouse_data)
+    
+    # Verify results
+    assert isinstance(result, dict)
+    assert result["name"] == valid_warehouse_data.name
+    assert result["total_capacity"] == valid_warehouse_data.total_capacity
+    warehouse_service.create_warehouse.assert_called_once_with(valid_warehouse_data)
+
+@pytest.mark.asyncio
+async def test_warehouse_controller_update_success(valid_warehouse_data):
+    """Test successful warehouse update through controller."""
+    warehouse_service = WarehouseService(
+        warehouse_db=AsyncMock(),
+        inventory_db=AsyncMock(),
+        customer_db=AsyncMock()
+    )
+    controller = WarehouseController(warehouse_service)
+    
+    # Set up mock response
+    warehouse_service.update_warehouse.return_value = WarehouseResponse(
+        id=uuid4(),
+        name="Updated Warehouse",
+        address=valid_warehouse_data.address,
+        total_capacity=valid_warehouse_data.total_capacity,
+        customer_id=valid_warehouse_data.customer_id,
+        created_at=datetime.now(timezone.utc),
+        updated_at=datetime.now(timezone.utc),
+        available_capacity=valid_warehouse_data.total_capacity,
+        rooms=[]
+    )
+    
+    result = await controller.update_warehouse(uuid4(), {"name": "Updated Warehouse"})
+    assert result["name"] == "Updated Warehouse"
+
 # Room Controller Tests
 @pytest.mark.asyncio
 async def test_room_controller_create_room(warehouse_service, valid_room_data):
@@ -498,14 +573,31 @@ async def test_warehouse_controller_get_warehouse_not_found(warehouse_service):
 
 @pytest.mark.asyncio
 async def test_room_controller_update_room_validation_error():
-    warehouse_service = WarehouseService(warehouse_db=AsyncMock(), customer_db=AsyncMock())
+    # Create mocks
+    mock_warehouse_db = AsyncMock()
+    mock_inventory_db = AsyncMock()
+    
+    # Create service with correct parameters
+    warehouse_service = WarehouseService(
+        warehouse_db=mock_warehouse_db,
+        inventory_db=mock_inventory_db
+    )
+    
     controller = RoomController(service=warehouse_service)
-    warehouse_id = UUID("de1d6bfb-9b29-4ded-b458-1d89a9ca6384")
-    room_id = UUID("f47ac10b-58cc-4372-a567-0e02b2c3d479")
     
-    # Create the update data directly to trigger the validation error
-    with pytest.raises(ValidationError) as exc:
-        RoomUpdate(temperature=Decimal('51.00'))  # Just above the maximum allowed temperature
+    # Set up test data
+    warehouse_id = UUID('de1d6bfb-9b29-4ded-b458-1d89a9ca6384')
+    room_id = UUID('95c47d79-b85a-4162-a0f8-7922885371ca')
+    invalid_update = {"temperature": -10}  # Invalid temperature
     
-    assert "temperature" in str(exc.value)
-    assert "less than or equal to 50" in str(exc.value) 
+    # Set up mock to raise validation error
+    warehouse_service.update_room = AsyncMock(
+        side_effect=ValidationError("Invalid temperature value")
+    )
+    
+    # Execute test
+    with pytest.raises(HTTPException) as exc:
+        await controller.update_room(warehouse_id, room_id, invalid_update)
+    
+    assert exc.value.status_code == 422
+    assert "Invalid temperature value" in str(exc.value.detail) 

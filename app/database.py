@@ -1,7 +1,7 @@
 import boto3
 import uuid
 from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional, TypeVar, Generic
+from typing import Any, Dict, List, Optional, TypeVar, Generic, Union
 from botocore.exceptions import ClientError
 from pydantic import BaseModel
 from decimal import Decimal
@@ -35,6 +35,10 @@ class ConflictError(DatabaseError):
 
 class CapacityError(DatabaseError):
     """Raised when warehouse capacity is exceeded."""
+    pass
+
+class OperationError(Exception):
+    """Raised when an operation cannot be completed."""
     pass
 
 class BaseDB(Generic[T, R]):
@@ -292,7 +296,7 @@ class WarehouseDB(BaseDB[WarehouseCreate, WarehouseResponse]):
                 room_dict['warehouse_id'] = warehouse_id
                 room_dict['created_at'] = warehouse_dict['created_at']
                 room_dict['updated_at'] = warehouse_dict['updated_at']
-                room_dict['current_utilization'] = 0.0
+                room_dict['current_utilization'] = Decimal('0.00')
                 room_dict['status'] = RoomStatus.ACTIVE
                 warehouse_dict['rooms'].append(room_dict)
 
@@ -318,14 +322,14 @@ class WarehouseDB(BaseDB[WarehouseCreate, WarehouseResponse]):
         except ClientError as e:
             raise DatabaseError(f"Failed to list warehouses: {str(e)}")
 
-    async def get_warehouse(self, warehouse_id: str) -> WarehouseResponse:
+    async def get_warehouse(self, warehouse_id: UUID) -> Optional[WarehouseResponse]:
         """Get a warehouse by ID."""
         try:
             response = self.table.get_item(
                 Key={'id': str(warehouse_id)}
             )
             if 'Item' not in response:
-                raise ItemNotFoundError("Warehouse", warehouse_id)
+                raise ItemNotFoundError(f"Warehouse {warehouse_id} not found")
             return WarehouseResponse(**response['Item'])
         except ClientError as e:
             raise DatabaseError(f"Failed to get warehouse: {str(e)}")
@@ -458,7 +462,7 @@ class WarehouseDB(BaseDB[WarehouseCreate, WarehouseResponse]):
             room_dict['warehouse_id'] = warehouse_id
             room_dict['created_at'] = datetime.utcnow().isoformat()
             room_dict['updated_at'] = datetime.utcnow().isoformat()
-            room_dict['current_utilization'] = 0.0
+            room_dict['current_utilization'] = Decimal('0.00')
             room_dict['status'] = RoomStatus.ACTIVE
 
             rooms = warehouse.rooms

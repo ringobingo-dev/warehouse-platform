@@ -156,7 +156,8 @@ async def test_get_room_success(client, mock_room_db):
 async def test_list_rooms_by_warehouse(client, mock_room_db, test_warehouse, test_room):
     # Set up mock return values
     mock_room_db.get_warehouse.return_value = test_warehouse
-    mock_room_db.list_rooms.return_value = [RoomResponse(**test_room)]
+    mock_room_db.list_rooms.return_value = [test_room]
+    mock_room_db.get_room.return_value = test_room
     
     response = await client.get(f"/api/v1/warehouses/{test_warehouse['id']}/rooms")
     assert response.status_code == 200
@@ -197,30 +198,20 @@ async def test_update_room_success(client, mock_room_db, test_room):
     assert response_data["humidity"] == update_data["humidity"]
 
 @pytest.mark.asyncio
-async def test_update_room_capacity_validation(client: CustomTestClient, mock_room_db, test_room_with_inventory):
-    """Test room capacity validation during update"""
-    update_data = {
-        "capacity": "-50.00"  # Invalid negative capacity
-    }
-    
-    mock_room_db.get_room.return_value = test_room_with_inventory
-    mock_room_db.update_room.side_effect = ValidationError("Capacity must be positive")
-    
+async def test_update_room_capacity_validation(client, mock_room_db, test_room_with_inventory):
+    """Test room capacity validation during update."""
+    update_data = {"capacity": "-50.00"}
     response = await client.patch(f"/api/v1/rooms/{test_room_with_inventory['id']}", json=update_data)
-    
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
     data = response.json()
-    assert "capacity" in data["detail"].lower()
+    assert any("capacity" in error["loc"] for error in data["detail"])
+    assert any("greater than 0" in error["msg"] for error in data["detail"])
 
 @pytest.mark.asyncio
-async def test_delete_room_success(client: CustomTestClient, mock_warehouse_db, test_room):
-    """Test successful room deletion"""
-    mock_warehouse_db.get_room.return_value = test_room
-    mock_warehouse_db.delete_room.return_value = None
-    
+async def test_delete_room_success(client, mock_warehouse_db, test_room):
+    """Test successful room deletion."""
     response = await client.delete(f"/api/v1/rooms/{test_room['id']}")
-    
-    assert response.status_code == status.HTTP_404_NOT_FOUND
+    assert response.status_code == status.HTTP_204_NO_CONTENT
 
 @pytest.mark.asyncio
 async def test_delete_room_with_inventory(client: CustomTestClient, mock_room_db, test_room_with_inventory):

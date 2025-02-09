@@ -29,6 +29,7 @@ async def test_add_inventory_success(client: CustomTestClient, mock_warehouse_db
         "sku": "TEST-SKU-001",
         "quantity": "10",
         "unit": "kg",
+        "unit_weight": "2.5",
         "room_id": str(test_inventory["room_id"]),
         "warehouse_id": str(test_inventory["warehouse_id"])
     }
@@ -47,6 +48,7 @@ async def test_add_inventory_success(client: CustomTestClient, mock_warehouse_db
     data = response.json()
     assert data["name"] == inventory_data["name"]
     assert data["quantity"] == inventory_data["quantity"]
+    assert data["unit_weight"] == inventory_data["unit_weight"]
     assert "id" in data
 
 @pytest.mark.asyncio
@@ -82,7 +84,23 @@ async def test_get_inventory_success(client: CustomTestClient, mock_inventory_db
 @pytest.mark.asyncio
 async def test_list_inventory_by_room(client: CustomTestClient, mock_warehouse_db, test_inventory):
     """Test listing inventory by room."""
-    mock_warehouse_db.get_room.return_value = {"id": test_inventory["room_id"]}
+    mock_warehouse_db.get_room.return_value = {
+        "id": test_inventory["room_id"],
+        "name": "Test Room",
+        "capacity": "100.00",
+        "temperature": "20.00",
+        "humidity": "50.00",
+        "dimensions": {
+            "length": "10.00",
+            "width": "8.00",
+            "height": "4.00"
+        },
+        "warehouse_id": test_inventory["warehouse_id"],
+        "status": "active",
+        "available_capacity": "100.00",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc)
+    }
     mock_warehouse_db.list_inventory_by_room.return_value = [test_inventory]
     
     response = await client.get(f"/api/v1/inventory/room/{test_inventory['room_id']}")
@@ -240,9 +258,11 @@ async def test_create_inventory_success(client: CustomTestClient, mock_warehouse
         "sku": "TEST-SKU-001",
         "name": "Test Item",
         "description": "Test item description",
-        "quantity": "100.00",
+        "quantity": "10",
         "unit": "kg",
-        "room_id": test_room["id"]
+        "unit_weight": "2.5",
+        "room_id": test_room["id"],
+        "warehouse_id": test_room["warehouse_id"]
     }
     
     mock_warehouse_db.get_room.return_value = test_room
@@ -261,14 +281,26 @@ async def test_create_inventory_success(client: CustomTestClient, mock_warehouse
     assert data["name"] == inventory_data["name"]
     assert data["quantity"] == inventory_data["quantity"]
     assert data["unit"] == inventory_data["unit"]
+    assert data["unit_weight"] == inventory_data["unit_weight"]
     assert data["room_id"] == str(inventory_data["room_id"])
+    assert data["warehouse_id"] == str(inventory_data["warehouse_id"])
 
 @pytest.mark.asyncio
 async def test_search_inventory(client: CustomTestClient, mock_warehouse_db, test_inventory):
     """Test searching inventory by SKU"""
     mock_warehouse_db.search_inventory.return_value = [test_inventory]
+    mock_warehouse_db.get_warehouse.return_value = {
+        "id": test_inventory["warehouse_id"],
+        "name": "Test Warehouse",
+        "address": "123 Test St",
+        "total_capacity": "1000.00",
+        "customer_id": str(uuid4()),
+        "available_capacity": "900.00",
+        "created_at": datetime.now(timezone.utc),
+        "updated_at": datetime.now(timezone.utc)
+    }
     
-    response = await client.get("/api/v1/inventory/search", params={"sku": "TEST-SKU-001"})
+    response = await client.get("/api/v1/inventory/search", params={"sku": test_inventory["sku"]})
     
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
