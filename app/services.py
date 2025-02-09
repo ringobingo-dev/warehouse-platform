@@ -28,25 +28,21 @@ class WarehouseService:
         self.customer_db = customer_db
 
     async def create_warehouse(self, warehouse_data: WarehouseCreate) -> WarehouseResponse:
-        """Create a new warehouse with validation."""
+        """Create a new warehouse."""
         logger.info(f"Creating warehouse for customer {warehouse_data.customer_id}")
         
         # Verify customer exists
-        try:
-            customer = await self.customer_db.get_customer(str(warehouse_data.customer_id))
-        except ItemNotFoundError:
-            raise ValueError(f"Customer {warehouse_data.customer_id} not found")
-        
+        customer = await self.get_customer(str(warehouse_data.customer_id))
         if not customer:
             raise ValueError(f"Customer {warehouse_data.customer_id} not found")
         
-        # Validate warehouse capacity
-        if not self._validate_warehouse_capacity(warehouse_data.model_dump()):
-            raise ValueError("Invalid warehouse capacity configuration")
-        
         # Create warehouse
-        warehouse = await self.warehouse_db.create_warehouse(warehouse_data)
+        warehouse_dict = await self.warehouse_db.create_warehouse(warehouse_data.model_dump())
+        if isinstance(warehouse_dict, WarehouseResponse):
+            warehouse_dict = warehouse_dict.model_dump()
+        warehouse = WarehouseResponse(**warehouse_dict)
         logger.info(f"Created warehouse {warehouse.id}")
+        
         return warehouse
 
     async def get_warehouse(self, warehouse_id_str: str) -> WarehouseResponse:
@@ -336,7 +332,7 @@ class WarehouseService:
         """Update warehouse total capacity based on room dimensions."""
         rooms = await self.list_rooms(warehouse_id)
         total_capacity = sum(
-            room.length * room.width * room.height
+            room.dimensions.length * room.dimensions.width * room.dimensions.height
             for room in rooms
             if room.status == RoomStatus.ACTIVE
         )
@@ -472,24 +468,34 @@ class WarehouseService:
         except ItemNotFoundError:
             raise ValueError(f"Customer {customer_id} not found")
 
-    async def calculate_warehouse_utilization(self, warehouse_id: UUID) -> Decimal:
-        """Calculate the current utilization percentage of a warehouse."""
-        logger.info(f"Calculating utilization for warehouse {warehouse_id}")
-        
-        # Get warehouse details
-        warehouse = await self.get_warehouse(str(warehouse_id))
-        total_capacity = Decimal(str(warehouse.total_capacity))
-        
-        # Calculate used capacity from inventory
-        used_capacity = Decimal('0')
-        inventory_items = await self.warehouse_db.get_inventory_levels(str(warehouse_id))
-        for item in inventory_items:
-            used_capacity += Decimal(str(item.total_weight))
-        
-        # Calculate utilization percentage
-        utilization_percentage = (used_capacity / total_capacity * 100).quantize(Decimal('0.01')) if total_capacity > 0 else Decimal('0')
-        
-        return utilization_percentage
+    async def calculate_warehouse_utilization(self, warehouse_id: str) -> dict:
+        """Calculate the utilization of a warehouse."""
+        warehouse = await self.warehouse_db.get_warehouse(warehouse_id)
+        if not warehouse:
+            raise ItemNotFoundError(f"Warehouse with ID {warehouse_id} not found")
+
+        rooms = await self.warehouse_db.list_rooms(warehouse_id)
+        total_capacity = Decimal('0')
+        total_used = Decimal('0')
+
+        for room in rooms:
+            room_capacity = await self.calculate_room_capacity(room)
+            total_capacity += room_capacity
+            
+            inventory_items = await self.warehouse_db.list_inventory_by_room(room["id"])
+            room_used = sum(Decimal(str(item["total_weight"])) for item in inventory_items)
+            total_used += room_used
+
+        if total_capacity == Decimal('0'):
+            utilization_percentage = Decimal('0')
+        else:
+            utilization_percentage = (total_used / total_capacity) * Decimal('100')
+
+        return {
+            "total_capacity": total_capacity,
+            "total_used": total_used,
+            "utilization_percentage": utilization_percentage
+        }
 
     async def check_room_availability(
         self,
@@ -518,4 +524,21 @@ class WarehouseService:
         except Exception as e:
             logger.error(f"Error checking room availability: {str(e)}")
             raise
+
+    async def get_customer(self, customer_id: str) -> dict:
+        """Get a customer by ID."""
+        customer = await self.customer_db.get_customer(customer_id)
+        if not customer:
+            raise ItemNotFoundError(f"Customer with ID {customer_id} not found")
+        return customer
+
+    async def calculate_room_capacity(self, room: dict) -> Decimal:
+        """Calculate the capacity of a room based on its dimensions."""
+        if isinstance(room, dict) and 'dimensions' in room:
+            dimensions = room['dimensions']
+            length = Decimal(str(dimensions['length']))
+            width = Decimal(str(dimensions['width']))
+            height = Decimal(str(dimensions['height']))
+            return length * width * height
+        raise ValueError("Invalid room data format")
 

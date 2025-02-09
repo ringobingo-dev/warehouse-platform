@@ -3,7 +3,7 @@ from fastapi import status
 import pytest
 from uuid import uuid4
 from decimal import Decimal
-
+from app.database import ItemNotFoundError, ValidationError, DatabaseError
 from app.main import app
 from app.utils import json_serialize
 from app.models import RoomStatus
@@ -33,6 +33,7 @@ async def test_get_customer_success(client, mock_customer_db, test_customer):
 
 @pytest.mark.asyncio
 async def test_get_customer_not_found(client, mock_customer_db):
+    mock_customer_db.get_customer.side_effect = ItemNotFoundError("Customer not found")
     response = await client.get(f"/api/v1/customers/{uuid4()}")
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
@@ -54,6 +55,7 @@ async def test_delete_customer_success(client, mock_customer_db, test_customer):
 async def test_create_warehouse_success(client, mock_warehouse_db, mock_customer_db, test_customer, mock_warehouse_data):
     warehouse_data = mock_warehouse_data.copy()
     warehouse_data['customer_id'] = test_customer['id']
+    warehouse_data['name'] = "Test Warehouse"
     response = await client.post('/api/v1/warehouses', json=warehouse_data)
     assert response.status_code == status.HTTP_201_CREATED
     data = response.json()
@@ -103,8 +105,10 @@ async def test_update_warehouse_success(client, mock_warehouse_db, test_warehous
 
 @pytest.mark.asyncio
 async def test_update_warehouse_not_found(client, mock_warehouse_db):
+    """Test warehouse update with non-existent ID"""
+    mock_warehouse_db.update_warehouse.side_effect = ItemNotFoundError("Warehouse not found")
     update_data = {'name': 'Updated Warehouse'}
-    response = client.patch(f'/api/v1/warehouses/{uuid4()}', json=update_data)
+    response = await client.patch(f'/api/v1/warehouses/{uuid4()}', json=update_data)
     assert response.status_code == status.HTTP_404_NOT_FOUND
 
 @pytest.mark.asyncio
@@ -114,6 +118,8 @@ async def test_delete_warehouse_success(client, mock_warehouse_db, test_warehous
 
 @pytest.mark.asyncio
 async def test_delete_warehouse_not_found(client, mock_warehouse_db):
+    """Test warehouse deletion with non-existent ID"""
+    mock_warehouse_db.delete_warehouse.side_effect = ItemNotFoundError("Warehouse not found")
     response = await client.delete(f'/api/v1/warehouses/{uuid4()}')
     assert response.status_code == status.HTTP_404_NOT_FOUND
 

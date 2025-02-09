@@ -427,6 +427,46 @@ async def check_warehouse_availability(
             detail="Warehouse not found"
         )
 
+@warehouse_router.get(
+    "/{warehouse_id}/rooms",
+    response_model=List[RoomResponse],
+    summary="List rooms by warehouse",
+    tags=["rooms"]
+)
+async def list_rooms_by_warehouse(
+    warehouse_id: str,
+    db: RoomDB = Depends(get_room_db)
+):
+    try:
+        # Validate UUID format
+        try:
+            warehouse_id_uuid = UUID(warehouse_id)
+        except ValueError:
+            raise HTTPException(
+                status_code=status.HTTP_400_BAD_REQUEST,
+                detail="Invalid warehouse ID format"
+            )
+            
+        try:
+            return await db.list_rooms(str(warehouse_id_uuid))
+        except ItemNotFoundError as e:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail=str(e)
+            )
+        except DatabaseError as e:
+            raise HTTPException(
+                status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+                detail=str(e)
+            )
+    except HTTPException:
+        raise
+    except Exception as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Error listing rooms: {str(e)}"
+        )
+
 # Room routes
 @room_router.post(
     "/",
@@ -441,6 +481,11 @@ async def create_room(
 ):
     try:
         return await db.create_room(room)
+    except ItemNotFoundError as e:
+        raise HTTPException(
+            status_code=status.HTTP_404_NOT_FOUND,
+            detail=str(e)
+        )
     except ValidationError as e:
         raise HTTPException(
             status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
@@ -559,6 +604,11 @@ async def delete_room(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Room {room_id} not found"
         )
+    except ValidationError as e:
+        raise HTTPException(
+            status_code=status.HTTP_422_UNPROCESSABLE_ENTITY,
+            detail=str(e)
+        )
     except DatabaseError as e:
         raise HTTPException(
             status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
@@ -585,6 +635,11 @@ async def get_room_conditions(
         raise HTTPException(
             status_code=status.HTTP_404_NOT_FOUND,
             detail=f"Room {room_id} not found"
+        )
+    except DatabaseError as e:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=str(e)
         )
 
 # Inventory routes

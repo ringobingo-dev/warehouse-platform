@@ -23,7 +23,13 @@ from datetime import datetime, timezone
 from uuid import UUID, uuid4
 import json
 from typing import Dict, List, Optional, Any, AsyncGenerator, Union
-from app.database import ItemNotFoundError, ValidationError, DatabaseError, ConflictError
+from app.database import (
+    ItemNotFoundError,
+    ValidationError,
+    DatabaseError,
+    ConflictError,
+    BaseDB
+)
 import uuid
 import httpx
 import pytest_asyncio
@@ -225,17 +231,15 @@ def test_customer():
 
 @pytest.fixture
 def test_warehouse(test_customer):
-    """Create a test warehouse."""
-    warehouse_id = "87654321-4321-8765-4321-876543210987"  # Fixed UUID for testing
     return {
-        "id": warehouse_id,
+        "id": "87654321-4321-8765-4321-876543210987",
         "name": "Test Warehouse",
         "address": "123 Test Street, Warehouse City, WH 12345",
-        "total_capacity": format_decimal(Decimal("1000.00")),
+        "total_capacity": "1000.00",
         "customer_id": test_customer["id"],
         "created_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc),
-        "available_capacity": format_decimal(Decimal("1000.00")),
+        "available_capacity": "1000.00",
         "rooms": []
     }
 
@@ -260,214 +264,245 @@ def mock_warehouse_data():
 @pytest.fixture
 def mock_warehouse_db(test_warehouse):
     """Mock warehouse database with proper timestamps and model validation."""
-    class MockWarehouseDB:
-        def create_warehouse_response(self, warehouse: dict) -> WarehouseResponse:
-            """Create a properly formatted warehouse response with timestamps."""
-            if 'created_at' not in warehouse:
-                warehouse['created_at'] = datetime.now(timezone.utc)
-            if 'updated_at' not in warehouse:
-                warehouse['updated_at'] = datetime.now(timezone.utc)
-            return WarehouseResponse(**warehouse)
-
+    class MockWarehouseDB(BaseDB[WarehouseCreate, WarehouseResponse]):
         def __init__(self):
-            # Base DB methods
-            self.create_item = AsyncMock(name='create_item')
-            self.get_item = AsyncMock(name='get_item')
-            self.update_item = AsyncMock(name='update_item')
-            self.delete_item = AsyncMock(name='delete_item')
-            self.list_items = AsyncMock(name='list_items')
-            
-            # Warehouse-specific methods
-            self.get_warehouse = AsyncMock(name='get_warehouse')
-            self.create_warehouse = AsyncMock(name='create_warehouse')
-            self.update_warehouse = AsyncMock(name='update_warehouse')
-            self.delete_warehouse = AsyncMock(name='delete_warehouse')
-            self.list_warehouses = AsyncMock(name='list_warehouses')
-            self.list_by_customer = AsyncMock(name='list_by_customer')
-            self.calculate_warehouse_utilization = AsyncMock(name='calculate_warehouse_utilization')
-            self.check_availability = AsyncMock(name='check_availability')
-            self.get_inventory_levels = AsyncMock(name='get_inventory_levels')
-            
-            # Room operations within warehouses
-            self.create_room = AsyncMock(name='create_room')
-            self.get_room = AsyncMock(name='get_room')
-            self.update_room = AsyncMock(name='update_room')
-            self.delete_room = AsyncMock(name='delete_room')
-            self.list_rooms = AsyncMock(name='list_rooms')
-            self.get_rooms = AsyncMock(name='get_rooms')
-            
-            # Map base methods to warehouse-specific methods
-            self.create_item.side_effect = self.create_warehouse
-            self.get_item.side_effect = self.get_warehouse
-            self.update_item.side_effect = self.update_warehouse
-            self.delete_item.side_effect = self.delete_warehouse
-            self.list_items.side_effect = self.list_warehouses
+            super().__init__(table_name="warehouses")
+            self.response_model = WarehouseResponse
+            self.get_warehouse = AsyncMock()
+            self.create_warehouse = AsyncMock()
+            self.update_warehouse = AsyncMock()
+            self.delete_warehouse = AsyncMock()
+            self.list_warehouses = AsyncMock()
+            self.list_by_customer = AsyncMock()
+            self.get_customer = AsyncMock()
+            # Add missing methods
+            self.get_room = AsyncMock()
+            self.create_room = AsyncMock()
+            self.search_inventory = AsyncMock()
+            self.get_inventory_levels = AsyncMock()
+            self.add_inventory = AsyncMock()
+            self.list_inventory_by_room = AsyncMock()
 
-            # Set up error cases
-            self.get_warehouse.side_effect = lambda id: None if id != test_warehouse['id'] else self.create_warehouse_response(test_warehouse)
-            self.delete_warehouse.side_effect = lambda id: None if id != test_warehouse['id'] else None
-            self.update_warehouse.side_effect = lambda id, data: None if id != test_warehouse['id'] else self.create_warehouse_response({**test_warehouse, **data.model_dump()})
+        def create_warehouse_response(self, warehouse_data: dict) -> WarehouseResponse:
+            """Create a properly formatted warehouse response with timestamps."""
+            if 'created_at' not in warehouse_data:
+                warehouse_data['created_at'] = datetime.now(timezone.utc)
+            if 'updated_at' not in warehouse_data:
+                warehouse_data['updated_at'] = datetime.now(timezone.utc)
+            if 'available_capacity' not in warehouse_data:
+                warehouse_data['available_capacity'] = warehouse_data.get('total_capacity', '0.00')
+            if 'rooms' not in warehouse_data:
+                warehouse_data['rooms'] = []
+            if 'id' not in warehouse_data:
+                warehouse_data['id'] = test_warehouse['id']
+            return WarehouseResponse(**warehouse_data)
+
+        async def handle_create_warehouse(self, warehouse_data: Union[WarehouseCreate, dict]):
+            try:
+                # Handle both Pydantic model and dict inputs
+                if hasattr(warehouse_data, 'model_dump'):
+                    warehouse_dict = warehouse_data.model_dump()
+                else:
+                    warehouse_dict = warehouse_data.copy()
+                
+                warehouse_dict['id'] = test_warehouse['id']  # Use test ID for consistency
+                warehouse_dict['created_at'] = datetime.now(timezone.utc)
+                warehouse_dict['updated_at'] = datetime.now(timezone.utc)
+                warehouse_dict['available_capacity'] = warehouse_dict.get('total_capacity', '0.00')
+                warehouse_dict['rooms'] = []
+                return self.create_warehouse_response(warehouse_dict)
+            except Exception as e:
+                raise DatabaseError(f"Error creating warehouse: {str(e)}")
+
+        async def handle_get_warehouse(self, warehouse_id: UUID):
+            try:
+                if str(warehouse_id) == str(test_warehouse["id"]):
+                    return self.create_warehouse_response(test_warehouse)
+                raise ItemNotFoundError(f"Warehouse {warehouse_id} not found")
+            except ItemNotFoundError:
+                raise
+            except Exception as e:
+                raise DatabaseError(f"Error getting warehouse: {str(e)}")
+
+        async def handle_update_warehouse(self, warehouse_id: UUID, update_data: WarehouseUpdate):
+            try:
+                warehouse = test_warehouse.copy()
+                if str(warehouse_id) != str(warehouse["id"]):
+                    raise ItemNotFoundError(f"Warehouse {warehouse_id} not found")
+
+                updated_warehouse = {
+                    "id": warehouse_id,
+                    "name": update_data.name if update_data.name is not None else warehouse["name"],
+                    "address": update_data.address if update_data.address is not None else warehouse["address"],
+                    "total_capacity": str(update_data.total_capacity) if update_data.total_capacity is not None else warehouse["total_capacity"],
+                    "customer_id": warehouse["customer_id"],
+                    "created_at": warehouse["created_at"],
+                    "updated_at": datetime.now(timezone.utc),
+                    "available_capacity": warehouse["available_capacity"]
+                }
+                
+                return WarehouseResponse(**updated_warehouse)
+            except ItemNotFoundError:
+                raise
+            except Exception as e:
+                raise DatabaseError(f"Error updating warehouse: {str(e)}")
+
+        async def handle_list_by_customer(self, customer_id: UUID):
+            if str(customer_id) == str(test_warehouse["customer_id"]):
+                return [test_warehouse]
+            return []
+
+        async def handle_get_room(self, room_id: UUID):
+            """Handle get room requests."""
+            try:
+                if str(room_id) == str(test_room["id"]):
+                    return test_room
+                raise ItemNotFoundError(f"Room {room_id} not found")
+            except ItemNotFoundError:
+                raise
+            except Exception as e:
+                raise DatabaseError(f"Error getting room: {str(e)}")
+
+        async def handle_create_room(self, room_data: RoomCreate):
+            """Handle create room requests."""
+            try:
+                room_dict = room_data.model_dump()
+                room_dict['id'] = test_room['id']
+                room_dict['created_at'] = datetime.now(timezone.utc)
+                room_dict['updated_at'] = datetime.now(timezone.utc)
+                room_dict['available_capacity'] = room_dict.get('capacity', '0.00')
+                return RoomResponse(**room_dict)
+            except Exception as e:
+                raise DatabaseError(f"Error creating room: {str(e)}")
+
+        async def handle_search_inventory(self, query: str):
+            """Handle inventory search requests."""
+            return [test_inventory]
+
+        async def handle_get_inventory_levels(self, warehouse_id: UUID):
+            """Handle get inventory levels requests."""
+            return {
+                'total_capacity': Decimal('1000.00'),
+                'used_capacity': Decimal('0.00'),
+                'available_capacity': Decimal('1000.00')
+            }
+
+        async def handle_add_inventory(self, warehouse_id: UUID, inventory_data: dict):
+            """Handle add inventory requests."""
+            try:
+                inventory_dict = {
+                    "id": str(uuid4()),
+                    **inventory_data,
+                    "created_at": datetime.now(timezone.utc),
+                    "updated_at": datetime.now(timezone.utc)
+                }
+                return InventoryResponse(**inventory_dict)
+            except Exception as e:
+                raise DatabaseError(f"Error adding inventory: {str(e)}")
+
+        async def handle_list_inventory_by_room(self, room_id: UUID):
+            """Handle list inventory by room requests."""
+            return [test_inventory]
 
     mock_db = MockWarehouseDB()
     
-    # Set up default behaviors using the helper method
-    mock_db.create_warehouse.return_value = mock_db.create_warehouse_response(test_warehouse)
+    # Set up the mock methods with their handlers
+    mock_db.create_warehouse.side_effect = mock_db.handle_create_warehouse
+    mock_db.get_warehouse.side_effect = mock_db.handle_get_warehouse
+    mock_db.update_warehouse.side_effect = mock_db.handle_update_warehouse
+    mock_db.list_by_customer.side_effect = mock_db.handle_list_by_customer
     mock_db.list_warehouses.return_value = [mock_db.create_warehouse_response(test_warehouse)]
-    mock_db.list_by_customer.return_value = [mock_db.create_warehouse_response(test_warehouse)]
-    mock_db.list_items.return_value = [mock_db.create_warehouse_response(test_warehouse)]
-    
-    # Set up default behaviors for room operations
-    default_room = {
-        'id': str(uuid4()),
-        'name': 'Test Room',
-        'warehouse_id': test_warehouse['id'],
-        'capacity': Decimal('200.00'),
-        'temperature': Decimal('20.00'),
-        'humidity': Decimal('50.00'),
-        'dimensions': {
-            'length': Decimal('10.00'),
-            'width': Decimal('10.00'),
-            'height': Decimal('10.00')
-        },
-        'status': RoomStatus.ACTIVE,
-        'available_capacity': Decimal('200.00'),
-        'created_at': datetime.now(timezone.utc),
-        'updated_at': datetime.now(timezone.utc)
-    }
-    
-    mock_db.create_room.return_value = default_room
-    mock_db.get_room.return_value = default_room
-    mock_db.list_rooms.return_value = [default_room]
-    mock_db.get_rooms.return_value = [default_room]
-    
-    # Set up default behaviors for utilization and availability
-    mock_db.calculate_warehouse_utilization.return_value = {'total_capacity': Decimal('1000.00'), 'used_capacity': Decimal('0'), 'utilization_percentage': Decimal('0')}
-    mock_db.check_availability.return_value = {'available': True, 'total_capacity': Decimal('1000.00'), 'used_capacity': Decimal('0'), 'available_capacity': Decimal('1000.00')}
-    mock_db.get_inventory_levels.return_value = {'total_items': 0, 'items_by_sku': {}}
+    mock_db.get_customer.return_value = mock_db.create_warehouse_response(test_warehouse)
+
+    # Set up new mock methods
+    mock_db.get_room.side_effect = mock_db.handle_get_room
+    mock_db.create_room.side_effect = mock_db.handle_create_room
+    mock_db.search_inventory.side_effect = mock_db.handle_search_inventory
+    mock_db.get_inventory_levels.side_effect = mock_db.handle_get_inventory_levels
+    mock_db.add_inventory.side_effect = mock_db.handle_add_inventory
+    mock_db.list_inventory_by_room.side_effect = mock_db.handle_list_inventory_by_room
     
     return mock_db
 
 @pytest.fixture
 def mock_room_db(test_warehouse):
     """Mock room database with proper timestamps and model validation."""
-    class MockRoomDB:
-        def create_room_response(self, room: dict) -> RoomResponse:
-            """Create a properly formatted room response with timestamps."""
-            if 'created_at' not in room:
-                room['created_at'] = datetime.now(timezone.utc)
-            if 'updated_at' not in room:
-                room['updated_at'] = datetime.now(timezone.utc)
-            if 'status' not in room:
-                room['status'] = RoomStatus.ACTIVE
-            if 'available_capacity' not in room:
-                room['available_capacity'] = room.get('capacity', Decimal('0'))
-            if 'dimensions' not in room:
-                room['dimensions'] = {
-                    'length': Decimal('10.00'),
-                    'width': Decimal('10.00'),
-                    'height': Decimal('10.00')
-                }
-            return RoomResponse(**room)
-
+    class MockRoomDB(BaseDB[RoomCreate, RoomResponse]):
         def __init__(self):
+            self.response_model = RoomResponse
             # Base DB methods
-            self.create_item = AsyncMock(name='create_item')
-            self.get_item = AsyncMock(name='get_item')
-            self.update_item = AsyncMock(name='update_item')
-            self.delete_item = AsyncMock(name='delete_item')
-            self.list_items = AsyncMock(name='list_items')
-            
-            # Room-specific methods
-            self.get_room = AsyncMock(name='get_room')
-            self.create_room = AsyncMock(name='create_room')
-            self.update_room = AsyncMock(name='update_room')
-            self.delete_room = AsyncMock(name='delete_room')
-            self.list_rooms = AsyncMock(name='list_rooms')
-            self.get_room_conditions = AsyncMock(name='get_room_conditions')
-            
-            # Map base methods to room-specific methods
-            self.create_item.side_effect = self.create_room
-            self.get_item.side_effect = self.get_room
-            self.update_item.side_effect = self.update_room
-            self.delete_item.side_effect = self.delete_room
-            self.list_items.side_effect = self.list_rooms
+            self.get_room = AsyncMock()
+            self.create_room = AsyncMock()
+            self.update_room = AsyncMock()
+            self.delete_room = AsyncMock()
+            self.list_rooms = AsyncMock()
+            self.get_warehouse = AsyncMock()
 
-            # Set up validation error cases
-            def validate_room_capacity(room_data):
-                if hasattr(room_data, 'capacity') and room_data.capacity <= Decimal('0'):
-                    raise ValidationError("Room capacity must be greater than 0")
-                if hasattr(room_data, 'temperature') and (room_data.temperature < Decimal('-20') or room_data.temperature > Decimal('40')):
-                    raise ValidationError("Room temperature must be between -20°C and 40°C")
-                if hasattr(room_data, 'humidity') and (room_data.humidity < Decimal('0') or room_data.humidity > Decimal('100')):
-                    raise ValidationError("Room humidity must be between 0% and 100%")
+            async def handle_get_warehouse(warehouse_id):
+                if str(warehouse_id) == str(test_warehouse["id"]):
+                    return test_warehouse
+                raise ItemNotFoundError(f"Warehouse {warehouse_id} not found")
 
-            def handle_room_update(room_id, update_data):
-                if not any(r['id'] == room_id for r in self.list_rooms.return_value):
-                    return None
-                validate_room_capacity(update_data)
-                updated_room = {**self.get_room.return_value, **update_data.model_dump()}
-                return self.create_room_response(updated_room)
+            self.get_warehouse.side_effect = handle_get_warehouse
 
-            def handle_room_delete(room_id):
-                room = next((r for r in self.list_rooms.return_value if r['id'] == room_id), None)
-                if not room:
-                    return None
-                if Decimal(room['capacity']) != Decimal(room['available_capacity']):
-                    raise ConflictError("Cannot delete room with existing inventory")
-                return None
+            async def handle_list_rooms(warehouse_id=None):
+                try:
+                    # Check if warehouse exists
+                    if warehouse_id:
+                        warehouse = await self.get_warehouse(warehouse_id)
+                        if not warehouse:
+                            raise ItemNotFoundError(f"Warehouse {warehouse_id} not found")
+                    
+                    # Return test room for the test warehouse
+                    if str(warehouse_id) == str(test_warehouse["id"]):
+                        # Convert test_room data to match database format
+                        room_data = {
+                            "id": test_room["id"],
+                            "name": test_room["name"],
+                            "capacity": Decimal(test_room["capacity"]),
+                            "temperature": Decimal(test_room["temperature"]),
+                            "humidity": Decimal(test_room["humidity"]),
+                            "dimensions": RoomDimensions(
+                                length=Decimal(test_room["dimensions"]["length"]),
+                                width=Decimal(test_room["dimensions"]["width"]),
+                                height=Decimal(test_room["dimensions"]["height"])
+                            ),
+                            "warehouse_id": test_room["warehouse_id"],
+                            "status": test_room["status"],
+                            "available_capacity": Decimal(test_room["available_capacity"]),
+                            "created_at": test_room["created_at"],
+                            "updated_at": test_room["updated_at"]
+                        }
+                        return [RoomResponse(**room_data)]
+                    
+                    # For any other warehouse ID, return empty list
+                    return []
+                except ItemNotFoundError as e:
+                    raise ItemNotFoundError(str(e))
+                except Exception as e:
+                    raise DatabaseError(f"Error listing rooms: {str(e)}")
 
-            self.update_room.side_effect = handle_room_update
-            self.delete_room.side_effect = handle_room_delete
+            self.list_rooms.side_effect = handle_list_rooms
 
     mock_db = MockRoomDB()
-    
-    # Set up default behaviors
-    default_room = {
-        'id': str(uuid4()),
-        'name': 'Test Room',
-        'warehouse_id': test_warehouse['id'],
-        'capacity': Decimal('200.00'),
-        'temperature': Decimal('20.00'),
-        'humidity': Decimal('50.00'),
-        'dimensions': {
-            'length': Decimal('10.00'),
-            'width': Decimal('10.00'),
-            'height': Decimal('10.00')
-        },
-        'status': RoomStatus.ACTIVE,
-        'available_capacity': Decimal('200.00'),
-        'created_at': datetime.now(timezone.utc),
-        'updated_at': datetime.now(timezone.utc)
-    }
-    
-    mock_db.create_room.return_value = mock_db.create_room_response(default_room)
-    mock_db.get_room.return_value = mock_db.create_room_response(default_room)
-    mock_db.list_rooms.return_value = [mock_db.create_room_response(default_room)]
-    mock_db.get_room_conditions.return_value = {
-        'temperature': default_room['temperature'],
-        'humidity': default_room['humidity']
-    }
-    
     return mock_db
 
 @pytest.fixture
 def test_room(test_warehouse):
-    """Create a test room."""
-    room_id = "98765432-5678-4321-8765-432109876543"  # Fixed UUID for testing
     return {
-        "id": room_id,
+        "id": "98765432-5678-4321-8765-432109876543",
         "name": "Test Room",
-        "capacity": format_decimal(Decimal("100.00")),
-        "temperature": format_decimal(Decimal("20.50")),
-        "humidity": format_decimal(Decimal("50")),
+        "capacity": "100.00",
+        "temperature": "20.50",
+        "humidity": "50",
         "dimensions": {
-            "length": format_decimal(Decimal("10.00")),
-            "width": format_decimal(Decimal("8.00")),
-            "height": format_decimal(Decimal("4.00"))
+            "length": "10.00",
+            "width": "8.00",
+            "height": "4.00"
         },
         "warehouse_id": test_warehouse["id"],
         "status": RoomStatus.ACTIVE,
-        "available_capacity": format_decimal(Decimal("100.00")),
+        "available_capacity": "100.00",
         "created_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc)
     }
@@ -568,17 +603,16 @@ def sample_inventory_data():
     }
 
 @pytest.fixture
-def test_inventory(test_room):
-    """Create a test inventory item."""
+def test_inventory():
     return {
         "id": str(uuid4()),
         "sku": "TEST-SKU-001",
-        "name": "Test Inventory Item",
-        "description": "Test Inventory Item Description",
-        "quantity": format_decimal(Decimal("100.00")),
+        "name": "Test Item",
+        "description": "Test Description",
+        "quantity": Decimal("10.00"),
         "unit": "kg",
-        "room_id": test_room["id"],
-        "warehouse_id": test_room["warehouse_id"],
+        "room_id": str(uuid4()),
+        "warehouse_id": str(uuid4()),
         "created_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc)
     }
@@ -653,7 +687,7 @@ def mock_inventory_db(test_inventory):
             self.get_item.side_effect = self.get_inventory
             self.update_item.side_effect = self.update_inventory
             self.delete_item.side_effect = self.delete_inventory
-            self.list_items.side_effect = self.list_by_warehouse
+            self.list_items.side_effect = self.list_inventory
 
     mock_db = MockInventoryDB()
     
@@ -680,3 +714,29 @@ def mock_inventory_db(test_inventory):
     }]
     
     return mock_db
+
+@pytest.fixture
+def sample_room_data(test_warehouse):
+    """Create sample room data for testing."""
+    return {
+        "name": "Sample Room",
+        "capacity": "100.00",
+        "temperature": "20.00",
+        "humidity": "50.00",
+        "warehouse_id": test_warehouse["id"],
+        "dimensions": {
+            "length": "10.00",
+            "width": "8.00",
+            "height": "4.00"
+        },
+        "status": "active"
+    }
+
+@pytest.fixture
+def test_room_with_inventory(test_room, test_inventory):
+    """Create a test room with inventory."""
+    return {
+        **test_room,
+        "inventory": [test_inventory],
+        "available_capacity": "0.00"  # Room is full due to inventory
+    }

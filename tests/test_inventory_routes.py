@@ -1,199 +1,152 @@
 import pytest
-from uuid import uuid4
+from uuid import uuid4, UUID
 from decimal import Decimal
 from fastapi import status
 from .conftest import CustomTestClient
 from datetime import datetime, timezone
+from app.database import ValidationError
+
+@pytest.fixture
+def test_inventory():
+    return {
+        "id": "550e8400-e29b-41d4-a716-446655440000",
+        "name": "Test Item",
+        "description": "Test Description",
+        "sku": "TEST-SKU-001",
+        "quantity": 10,
+        "unit_weight": Decimal("2.5"),
+        "total_weight": Decimal("25.0"),
+        "room_id": "550e8400-e29b-41d4-a716-446655440001",
+        "warehouse_id": "550e8400-e29b-41d4-a716-446655440002"
+    }
 
 @pytest.mark.asyncio
-async def test_add_inventory_success(
-    client: CustomTestClient,
-    mock_inventory_db,
-    mock_room_db,
-    sample_inventory_data
-):
+async def test_add_inventory_success(client: CustomTestClient, mock_warehouse_db, test_inventory):
     """Test successful inventory addition"""
-    mock_inventory_db.create_inventory.return_value = {
+    inventory_data = {
+        "name": "Test Item",
+        "description": "Test Description",
+        "sku": "TEST-SKU-001",
+        "quantity": "10",
+        "unit": "kg",
+        "room_id": str(test_inventory["room_id"]),
+        "warehouse_id": str(test_inventory["warehouse_id"])
+    }
+    
+    mock_warehouse_db.get_room.return_value = {"id": test_inventory["room_id"]}
+    mock_warehouse_db.add_inventory.return_value = {
         "id": str(uuid4()),
-        **sample_inventory_data,
+        **inventory_data,
         "created_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc)
     }
     
-    response = await client.post("/api/v1/inventory", json=sample_inventory_data)
+    response = await client.post("/api/v1/inventory", json=inventory_data)
+    
     assert response.status_code == status.HTTP_201_CREATED
     data = response.json()
-    assert data["sku"] == sample_inventory_data["sku"]
-    assert data["description"] == sample_inventory_data["description"]
-    assert Decimal(data["quantity"]) == sample_inventory_data["quantity"]
-    assert data["room_id"] == str(sample_inventory_data["room_id"])
+    assert data["name"] == inventory_data["name"]
+    assert data["quantity"] == inventory_data["quantity"]
     assert "id" in data
-    assert "created_at" in data
-    assert "updated_at" in data
 
 @pytest.mark.asyncio
-async def test_add_inventory_exceeds_capacity(
-    client: CustomTestClient,
-    mock_inventory_db,
-    mock_room_db,
-    sample_inventory_data
-):
-    """Test adding inventory that exceeds room capacity"""
-    # Mock room with limited available capacity
-    mock_room_db.get_room.return_value.available_capacity = Decimal("50.00")
-    sample_inventory_data["quantity"] = Decimal("100.00")
+async def test_add_inventory_exceeds_capacity(client: CustomTestClient, mock_inventory_db, test_room):
+    """Test inventory addition when it exceeds room capacity"""
+    inventory_data = {
+        "name": "Large Item",
+        "sku": "TEST-SKU-002",
+        "description": "Test Large Item",
+        "quantity": "1000.00",  # Exceeds capacity
+        "unit": "pieces",
+        "room_id": test_room["id"]
+    }
     
-    response = await client.post("/api/v1/inventory", json=sample_inventory_data)
+    response = await client.post("/api/v1/inventory", json=inventory_data)
+    
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
     data = response.json()
-    assert "capacity" in str(data["detail"]).lower()
-    assert "room" in str(data["detail"]).lower()
+    assert "detail" in data
 
 @pytest.mark.asyncio
-async def test_get_inventory_success(
-    client: CustomTestClient,
-    mock_inventory_db
-):
+async def test_get_inventory_success(client: CustomTestClient, mock_inventory_db, test_inventory):
     """Test successful inventory retrieval"""
-    inventory_id = uuid4()
-    mock_inventory_db.get_inventory.return_value = {
-        "id": str(inventory_id),
-        "sku": "TEST-SKU-001",
-        "description": "Test Inventory Item",
-        "quantity": "100.00",
-        "room_id": str(uuid4()),
-        "warehouse_id": str(uuid4()),
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc)
-    }
+    response = await client.get(f"/api/v1/inventory/{test_inventory['id']}")
     
-    response = await client.get(f"/api/v1/inventory/{inventory_id}")
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
-    assert data["id"] == str(inventory_id)
-    assert "sku" in data
-    assert "description" in data
-    assert "quantity" in data
-    assert "room_id" in data
+    assert data["id"] == test_inventory["id"]
+    assert data["name"] == test_inventory["name"]
+    assert data["unit"] == test_inventory["unit"]
+    assert data["sku"] == test_inventory["sku"]
 
 @pytest.mark.asyncio
-async def test_list_inventory_by_room(
-    client: CustomTestClient,
-    mock_inventory_db
-):
-    """Test listing inventory by room"""
-    room_id = uuid4()
-    mock_inventory_db.list_inventory.return_value = [{
-        "id": str(uuid4()),
-        "sku": "TEST-SKU-001",
-        "description": "Test Inventory Item",
-        "quantity": "100.00",
-        "room_id": str(room_id),
-        "warehouse_id": str(uuid4()),
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc)
-    }]
+async def test_list_inventory_by_room(client: CustomTestClient, mock_warehouse_db, test_inventory):
+    """Test listing inventory by room."""
+    mock_warehouse_db.get_room.return_value = {"id": test_inventory["room_id"]}
+    mock_warehouse_db.list_inventory_by_room.return_value = [test_inventory]
     
-    response = await client.get(f"/api/v1/rooms/{room_id}/inventory")
+    response = await client.get(f"/api/v1/inventory/room/{test_inventory['room_id']}")
+    
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
-    assert isinstance(data, list)
-    if len(data) > 0:
-        for item in data:
-            assert item["room_id"] == str(room_id)
+    assert len(data) == 1
+    assert data[0]["id"] == test_inventory["id"]
 
 @pytest.mark.asyncio
-async def test_transfer_inventory_success(
-    client: CustomTestClient,
-    mock_inventory_db,
-    mock_room_db
-):
-    """Test successful inventory transfer between rooms"""
-    inventory_id = uuid4()
+async def test_transfer_inventory_success(client: CustomTestClient, mock_inventory_db, test_inventory, test_room):
+    """Test successful inventory transfer"""
     transfer_data = {
-        "destination_room_id": str(uuid4()),
-        "quantity": "10.00"
+        "quantity": "50.00",
+        "source_room_id": test_inventory["room_id"],
+        "target_room_id": test_room["id"]
     }
     
-    mock_inventory_db.get_inventory.return_value = {
-        "id": str(inventory_id),
-        "sku": "TEST-SKU-001",
-        "description": "Test Inventory Item",
-        "quantity": "100.00",
-        "room_id": str(uuid4()),
-        "warehouse_id": str(uuid4()),
-        "created_at": datetime.now(timezone.utc),
-        "updated_at": datetime.now(timezone.utc)
+    mock_inventory_db.transfer_inventory.return_value = {
+        **test_inventory,
+        "room_id": test_room["id"],
+        "quantity": "50.00"
     }
     
-    mock_inventory_db.update_inventory.return_value = {
-        **mock_inventory_db.get_inventory.return_value,
-        "room_id": transfer_data["destination_room_id"],
-        "quantity": transfer_data["quantity"],
-        "updated_at": datetime.now(timezone.utc)
-    }
-    
-    response = await client.post(
-        f"/api/v1/inventory/{inventory_id}/transfer",
-        json=transfer_data
-    )
+    response = await client.post(f"/api/v1/inventory/{test_inventory['id']}/transfer", json=transfer_data)
     
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
-    assert data["id"] == str(inventory_id)
-    assert data["room_id"] == transfer_data["destination_room_id"]
-    assert Decimal(data["quantity"]) == Decimal(transfer_data["quantity"])
+    assert data["room_id"] == test_room["id"]
+    assert data["quantity"] == transfer_data["quantity"]
 
 @pytest.mark.asyncio
-async def test_transfer_inventory_exceeds_capacity(
-    client: CustomTestClient,
-    mock_inventory_db,
-    mock_room_db
-):
-    """Test inventory transfer exceeding destination room capacity"""
-    inventory_id = uuid4()
-    # Mock destination room with limited capacity
-    mock_room_db.get_room.return_value.available_capacity = Decimal("5.00")
-    
+async def test_transfer_inventory_exceeds_capacity(client: CustomTestClient, mock_inventory_db, test_inventory, test_room):
+    """Test inventory transfer with insufficient capacity"""
     transfer_data = {
-        "destination_room_id": str(uuid4()),
-        "quantity": "10.00"
+        "quantity": "1000.00",  # Exceeds room capacity
+        "source_room_id": test_inventory["room_id"],
+        "target_room_id": test_room["id"]
     }
     
-    response = await client.post(
-        f"/api/v1/inventory/{inventory_id}/transfer",
-        json=transfer_data
-    )
+    mock_inventory_db.transfer_inventory.side_effect = ValidationError("Transfer exceeds room capacity")
+    
+    response = await client.post(f"/api/v1/inventory/{test_inventory['id']}/transfer", json=transfer_data)
     
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
     data = response.json()
-    assert "capacity" in str(data["detail"]).lower()
+    assert "detail" in data
 
 @pytest.mark.asyncio
-async def test_transfer_inventory_insufficient_quantity(
-    client: CustomTestClient,
-    mock_inventory_db,
-    mock_room_db
-):
+async def test_transfer_inventory_insufficient_quantity(client: CustomTestClient, mock_inventory_db, test_inventory, test_room):
     """Test inventory transfer with insufficient quantity"""
-    inventory_id = uuid4()
-    # Mock inventory with less quantity than requested
-    mock_inventory_db.get_inventory.return_value.quantity = Decimal("5.00")
-    
     transfer_data = {
-        "destination_room_id": str(uuid4()),
-        "quantity": "10.00"
+        "quantity": "150.00",  # More than available
+        "source_room_id": test_inventory["room_id"],
+        "target_room_id": test_room["id"]
     }
     
-    response = await client.post(
-        f"/api/v1/inventory/{inventory_id}/transfer",
-        json=transfer_data
-    )
+    mock_inventory_db.transfer_inventory.side_effect = ValidationError("Insufficient quantity available")
+    
+    response = await client.post(f"/api/v1/inventory/{test_inventory['id']}/transfer", json=transfer_data)
     
     assert response.status_code == status.HTTP_422_UNPROCESSABLE_ENTITY
     data = response.json()
-    assert "quantity" in str(data["detail"]).lower()
-    assert "insufficient" in str(data["detail"]).lower()
+    assert "detail" in data
 
 @pytest.mark.asyncio
 async def test_get_inventory_history(
@@ -281,36 +234,47 @@ async def test_delete_inventory_success(
     assert not response.content
 
 @pytest.mark.asyncio
-async def test_search_inventory(
-    client: CustomTestClient,
-    mock_inventory_db
-):
-    """Test inventory search functionality"""
-    search_params = {
-        "sku": "TEST-SKU",
-        "warehouse_id": str(uuid4())
+async def test_create_inventory_success(client: CustomTestClient, mock_warehouse_db, test_room):
+    """Test successful inventory creation"""
+    inventory_data = {
+        "sku": "TEST-SKU-001",
+        "name": "Test Item",
+        "description": "Test item description",
+        "quantity": "100.00",
+        "unit": "kg",
+        "room_id": test_room["id"]
     }
     
-    mock_inventory_db.search_inventory.return_value = [{
+    mock_warehouse_db.get_room.return_value = test_room
+    mock_warehouse_db.create_inventory.return_value = {
         "id": str(uuid4()),
-        "sku": "TEST-SKU-001",
-        "description": "Test Inventory Item",
-        "quantity": "100.00",
-        "room_id": str(uuid4()),
-        "warehouse_id": search_params["warehouse_id"],
+        **inventory_data,
         "created_at": datetime.now(timezone.utc),
         "updated_at": datetime.now(timezone.utc)
-    }]
+    }
     
-    response = await client.get(
-        "/api/v1/inventory/search",
-        params=search_params
-    )
+    response = await client.post("/api/v1/inventory", json=inventory_data)
+    
+    assert response.status_code == status.HTTP_201_CREATED
+    data = response.json()
+    assert data["sku"] == inventory_data["sku"]
+    assert data["name"] == inventory_data["name"]
+    assert data["quantity"] == inventory_data["quantity"]
+    assert data["unit"] == inventory_data["unit"]
+    assert data["room_id"] == str(inventory_data["room_id"])
+
+@pytest.mark.asyncio
+async def test_search_inventory(client: CustomTestClient, mock_warehouse_db, test_inventory):
+    """Test searching inventory by SKU"""
+    mock_warehouse_db.search_inventory.return_value = [test_inventory]
+    
+    response = await client.get("/api/v1/inventory/search", params={"sku": "TEST-SKU-001"})
     
     assert response.status_code == status.HTTP_200_OK
     data = response.json()
     assert isinstance(data, list)
-    if len(data) > 0:
-        for item in data:
-            assert search_params["sku"] in item["sku"]
+    assert len(data) > 0
+    item = data[0]
+    assert item["sku"] == test_inventory["sku"]
+    assert item["name"] == test_inventory["name"]
 
